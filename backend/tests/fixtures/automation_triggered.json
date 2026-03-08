@@ -1,0 +1,15 @@
+{
+  "event_type": "automation_triggered",
+  "data": {
+    "name": "Evening Lights",
+    "entity_id": "automation.evening_lights",
+    "source": "state of sun.sun"
+  },
+  "origin": "LOCAL",
+  "time_fired": "2026-03-07T10:04:58+00:00",
+  "context": {
+    "id": "ctx_auto_001",
+    "parent_id": null,
+    "user_id": null
+  }
+}

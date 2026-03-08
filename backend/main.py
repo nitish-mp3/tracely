@@ -1,0 +1,593 @@
+"""Tracely FastAPI application — main entry point."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+import logging
+import os
+import time
+from collections import defaultdict
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from typing import Any
+
+import structlog
+import uvicorn
+from fastapi import FastAPI, Query, Request, Response
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from .config import Settings
+from .entity_map import EntityMap
+from .ha_client import HAClient
+from .health import get_health, get_metrics_text
+from .models import (
+    BookmarkRequest,
+    EventRecord,
+    EventResponse,
+    HealthResponse,
+    PaginatedEvents,
+)
+from .normalizer import Normalizer
+from .purge import PurgeManager
+from .storage import Storage
+from .tree_builder import TreeBuilder
+
+logger = structlog.get_logger(__name__)
+
+# ─── Globals (initialised during lifespan) ───────────────
+
+settings = Settings()
+storage = Storage(settings)
+entity_map = EntityMap()
+normalizer = Normalizer(entity_map)
+tree_builder = TreeBuilder(storage, settings)
+purge_manager = PurgeManager(storage, settings)
+ha_client: HAClient | None = None
+
+# SSE clients
+sse_clients: set[asyncio.Queue[str]] = set()
+
+# Dedup / rate state
+_dedup_cache: dict[str, float] = {}
+_sensor_counts: dict[str, list[float]] = defaultdict(list)
+
+# Event processing queue (back-pressure at 10 000 items)
+_event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10_000)
+_processor_task: asyncio.Task[None] | None = None
+
+
+# ─── Rate-limiter middleware ─────────────────────────────
+
+
+class _RateLimitMiddleware(BaseHTTPMiddleware):
+    """Simple token-bucket rate limiter per client IP."""
+
+    def __init__(
+        self, app: Any, *, max_requests: int = 100, window: int = 60,
+    ) -> None:
+        super().__init__(app)
+        self._max = max_requests
+        self._window = window
+        self._hits: dict[str, list[float]] = defaultdict(list)
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        self._hits[ip] = [t for t in self._hits[ip] if t > now - self._window]
+        if len(self._hits[ip]) >= self._max:
+            return Response(
+                content='{"error":"rate limit exceeded"}',
+                status_code=429,
+                media_type="application/json",
+            )
+        self._hits[ip].append(now)
+        return await call_next(request)
+
+
+# ─── Helpers ─────────────────────────────────────────────
+
+
+def _epoch_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _to_response(row: dict[str, Any]) -> EventResponse:
+    ts = row.get("timestamp", 0)
+    iso = (
+        datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
+        if ts
+        else ""
+    )
+    payload_str = row.get("payload", "{}")
+    try:
+        payload = json.loads(payload_str)
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+
+    return EventResponse(
+        id=row["id"],
+        parent_id=row.get("parent_id"),
+        event_type=row.get("event_type", ""),
+        domain=row.get("domain"),
+        service=row.get("service"),
+        entity_id=row.get("entity_id"),
+        payload=payload,
+        name=row.get("name"),
+        integration=row.get("integration"),
+        area=row.get("area"),
+        timestamp=iso,
+        user_id=row.get("user_id"),
+        important=bool(row.get("important", 0)),
+        confidence=row.get("confidence", "propagated"),
+        generated_root=bool(row.get("generated_root", 0)),
+    )
+
+
+def _dedup_hash(entity_id: str | None, event_type: str, payload: str) -> str:
+    data = f"{entity_id}:{event_type}:{payload}"
+    return hashlib.md5(data.encode()).hexdigest()  # noqa: S324
+
+
+# ─── Event ingestion pipeline ────────────────────────────
+
+
+async def _process_ha_event(raw_event: dict[str, Any]) -> None:
+    """Receive raw HA event → push into async processing queue."""
+    try:
+        _event_queue.put_nowait(raw_event)
+    except asyncio.QueueFull:
+        logger.warning("event_queue.full")
+
+
+def _normalize_raw_event(raw_event: dict[str, Any]) -> EventRecord | None:
+    """Turn a raw HA event dict into an EventRecord (or None if deduped)."""
+    event_type = raw_event.get("event_type", "")
+    data = raw_event.get("data", {})
+    context = raw_event.get("context", {})
+
+    # Generate ID
+    event_id = context.get("id") or TreeBuilder.generate_event_id(
+        json.dumps(raw_event, default=str),
+    )
+    parent_id = context.get("parent_id")
+    user_id = context.get("user_id")
+
+    # Entity & domain resolution
+    entity_id = normalizer.extract_entity_id(event_type, data)
+    domain, service = normalizer.extract_domain_service(event_type, data)
+
+    # Update entity map from state_changed payloads
+    if event_type == "state_changed" and entity_id:
+        new_st = data.get("new_state")
+        if new_st:
+            entity_map.update_entity(entity_id, new_st)
+
+    # Dedup check
+    payload_str = json.dumps(data, sort_keys=True, default=str)
+    dedup_key = _dedup_hash(entity_id, event_type, payload_str)
+    now = time.time()
+    if dedup_key in _dedup_cache:
+        if (now - _dedup_cache[dedup_key]) < (settings.dedup_window_ms / 1000):
+            return None
+    _dedup_cache[dedup_key] = now
+
+    # High-frequency sensor aggregation
+    if entity_id and event_type == "state_changed":
+        ts_list = _sensor_counts[entity_id]
+        ts_list.append(now)
+        _sensor_counts[entity_id] = [t for t in ts_list if t > now - 1.0]
+        if len(_sensor_counts[entity_id]) > settings.aggregate_threshold_per_sec:
+            return None  # skip — aggregate mode
+
+    # Housekeep dedup cache
+    if len(_dedup_cache) > 10_000:
+        _dedup_cache.clear()  # simple periodic reset
+
+    # Resolve entity info
+    entity_info = entity_map.resolve(entity_id)
+    area = entity_info.area if entity_info else ""
+    integration = entity_info.integration if entity_info else ""
+
+    # Human-readable name
+    name = normalizer.label(event_type, data, entity_id)
+
+    # Timestamp
+    time_fired = raw_event.get("time_fired")
+    if time_fired:
+        try:
+            dt = datetime.fromisoformat(time_fired.replace("Z", "+00:00"))
+            timestamp_ms = int(dt.timestamp() * 1000)
+        except (ValueError, AttributeError):
+            timestamp_ms = _epoch_ms()
+    else:
+        timestamp_ms = _epoch_ms()
+
+    confidence = "propagated" if parent_id else "inferred"
+    if not domain and entity_id and "." in entity_id:
+        domain = entity_id.split(".")[0]
+
+    return EventRecord(
+        id=event_id,
+        parent_id=parent_id,
+        event_type=event_type,
+        domain=domain,
+        service=service,
+        entity_id=entity_id,
+        payload=payload_str,
+        name=name,
+        integration=integration or None,
+        area=area or None,
+        timestamp=timestamp_ms,
+        user_id=user_id,
+        important=0,
+        confidence=confidence,
+        generated_root=0,
+    )
+
+
+async def _event_processor() -> None:
+    """Background task: read raw events from queue, normalise, store, link, fan-out SSE."""
+    while True:
+        try:
+            # Block-wait for the first event
+            raw = await _event_queue.get()
+            batch: list[EventRecord] = []
+            record = _normalize_raw_event(raw)
+            if record:
+                batch.append(record)
+
+            # Drain queue for up to 50 ms (batch window)
+            await asyncio.sleep(0.05)
+            while not _event_queue.empty() and len(batch) < 200:
+                try:
+                    raw = _event_queue.get_nowait()
+                    rec = _normalize_raw_event(raw)
+                    if rec:
+                        batch.append(rec)
+                except asyncio.QueueEmpty:
+                    break
+
+            if not batch:
+                continue
+
+            # Bulk insert
+            try:
+                await storage.insert_events_batch(batch)
+            except Exception:
+                logger.exception("event_processor.insert_error")
+                try:
+                    await purge_manager.emergency_purge()
+                except Exception:
+                    logger.exception("event_processor.emergency_purge_error")
+                continue
+
+            # Link + SSE fan-out
+            for rec in batch:
+                await tree_builder.link(rec)
+                _fan_out_sse(rec)
+
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("event_processor.error")
+
+
+def _fan_out_sse(record: EventRecord) -> None:
+    """Push event to all connected SSE clients."""
+    resp = _to_response(
+        {
+            "id": record.id,
+            "parent_id": record.parent_id,
+            "event_type": record.event_type,
+            "domain": record.domain,
+            "service": record.service,
+            "entity_id": record.entity_id,
+            "payload": record.payload,
+            "name": record.name,
+            "integration": record.integration,
+            "area": record.area,
+            "timestamp": record.timestamp,
+            "user_id": record.user_id,
+            "important": record.important,
+            "confidence": record.confidence,
+            "generated_root": record.generated_root,
+        },
+    )
+    sse_data = resp.model_dump_json()
+    dead: set[asyncio.Queue[str]] = set()
+    for client in sse_clients:
+        try:
+            client.put_nowait(sse_data)
+        except asyncio.QueueFull:
+            dead.add(client)
+    sse_clients.difference_update(dead)
+
+
+# ─── Lifespan ────────────────────────────────────────────
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    global ha_client, _processor_task
+
+    # Logging
+    log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(log_level),
+    )
+
+    # Storage
+    await storage.init()
+    logger.info("startup.storage_ready")
+
+    # Event processor
+    _processor_task = asyncio.create_task(_event_processor())
+
+    # HA client
+    ha_client = HAClient(settings, on_event=_process_ha_event)
+    if settings.effective_token:
+        try:
+            states = await ha_client.fetch_states()
+            entity_map.load_states(states)
+            logger.info("startup.entities_loaded", count=entity_map.count)
+        except Exception:
+            logger.exception("startup.entity_load_failed")
+        await ha_client.start()
+        logger.info("startup.ha_client_started")
+    else:
+        logger.warning(
+            "startup.no_token",
+            hint="Set HA_TOKEN or SUPERVISOR_TOKEN to connect to Home Assistant",
+        )
+
+    # Purge manager
+    await purge_manager.start()
+
+    yield
+
+    # Shutdown
+    await ha_client.stop()
+    if _processor_task:
+        _processor_task.cancel()
+        try:
+            await _processor_task
+        except asyncio.CancelledError:
+            pass
+    await purge_manager.stop()
+    await storage.close()
+    logger.info("shutdown.complete")
+
+
+# ─── FastAPI app ─────────────────────────────────────────
+
+app = FastAPI(
+    title="Tracely",
+    version="1.0.0",
+    description="Offline causal event tracing for Home Assistant",
+    lifespan=lifespan,
+)
+app.add_middleware(
+    _RateLimitMiddleware,
+    max_requests=settings.rate_limit_requests,
+    window=settings.rate_limit_window_seconds,
+)
+
+
+# ─── API endpoints ───────────────────────────────────────
+
+
+@app.get("/api/events", response_model=PaginatedEvents)
+async def api_get_events(
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=500),
+    entity: str | None = Query(None),
+    domain: str | None = Query(None),
+    area: str | None = Query(None),
+    user_id: str | None = Query(None),
+    event_type: str | None = Query(None),
+    q: str | None = Query(None),
+) -> PaginatedEvents:
+    # Parse from/to from raw query params (reserved word in Python)
+    from_str = request.query_params.get("from")
+    to_str = request.query_params.get("to")
+    from_ts = int(from_str) if from_str and from_str.isdigit() else None
+    to_ts = int(to_str) if to_str and to_str.isdigit() else None
+
+    if q:
+        rows = await storage.search_fts(q, limit=limit)
+        return PaginatedEvents(
+            total=len(rows), page=1, limit=limit,
+            items=[_to_response(r) for r in rows],
+        )
+
+    rows, total = await storage.get_events(
+        page=page, limit=limit, entity=entity, domain=domain,
+        area=area, user_id=user_id, event_type=event_type,
+        from_ts=from_ts, to_ts=to_ts,
+    )
+    return PaginatedEvents(
+        total=total, page=page, limit=limit,
+        items=[_to_response(r) for r in rows],
+    )
+
+
+@app.get("/api/events/stream")
+async def api_event_stream(request: Request) -> StreamingResponse:
+    """Server-Sent Events stream for live event updates."""
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=100)
+    sse_clients.add(queue)
+
+    async def generate() -> AsyncGenerator[str, None]:
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=30)
+                    yield f"data: {data}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            sse_clients.discard(queue)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/api/events/{event_id}")
+async def api_get_event(event_id: str) -> dict[str, Any]:
+    event = await storage.get_event(event_id)
+    if not event:
+        return {"error": "not found"}
+
+    root_id = await storage.find_root(event_id)
+    tree = await storage.get_tree(root_id)
+
+    max_depth = 0
+    if tree:
+        depths: dict[str, int] = {}
+        for node in tree:
+            pid = node.get("parent_id")
+            depths[node["id"]] = depths.get(pid, -1) + 1 if pid else 0
+        max_depth = max(depths.values()) if depths else 0
+
+    # Compute tree stats
+    tree_stats = None
+    if tree:
+        domain_counts: dict[str, int] = {}
+        entity_counts: dict[str, int] = {}
+        timestamps: list[int] = []
+        inferred = 0
+        verified = 0
+        for node in tree:
+            d = node.get("domain") or "unknown"
+            domain_counts[d] = domain_counts.get(d, 0) + 1
+            eid = node.get("entity_id")
+            if eid:
+                entity_counts[eid] = entity_counts.get(eid, 0) + 1
+            ts = node.get("timestamp")
+            if isinstance(ts, int):
+                timestamps.append(ts)
+            conf = node.get("confidence", "propagated")
+            if conf == "inferred":
+                inferred += 1
+            else:
+                verified += 1
+        duration_ms = (max(timestamps) - min(timestamps)) if timestamps else None
+        domains = [k for k in domain_counts if k != "unknown"]
+        top = max(entity_counts.items(), key=lambda x: x[1]) if entity_counts else None
+        tree_stats = {
+            "total_nodes": len(tree),
+            "domain_breakdown": domain_counts,
+            "domain_count": len(domains),
+            "duration_ms": duration_ms,
+            "inferred_count": inferred,
+            "verified_count": verified,
+            "top_entity": {"id": top[0], "count": top[1]} if top else None,
+            "entity_count": len(entity_counts),
+        }
+
+    return {
+        "event": _to_response(event),
+        "tree": [_to_response(n) for n in tree],
+        "tree_depth": max_depth,
+        "root_id": root_id,
+        "stats": tree_stats,
+    }
+
+
+@app.get("/api/search", response_model=PaginatedEvents)
+async def api_search(
+    q: str = "", limit: int = Query(50, ge=1, le=500),
+) -> PaginatedEvents:
+    rows = await storage.search_fts(q, limit=limit)
+    return PaginatedEvents(
+        total=len(rows), page=1, limit=limit,
+        items=[_to_response(r) for r in rows],
+    )
+
+
+@app.get("/api/trees")
+async def api_get_trees() -> dict[str, Any]:
+    rows = await storage.get_trees()
+    return {"items": rows}
+
+
+@app.get("/api/entities")
+async def api_get_entities() -> dict[str, Any]:
+    entities = entity_map.all_entities()
+    return {
+        "items": [
+            {
+                "entity_id": e.entity_id,
+                "friendly_name": e.friendly_name,
+                "domain": e.domain,
+                "area": e.area,
+                "integration": e.integration,
+            }
+            for e in entities
+        ],
+    }
+
+
+@app.get("/api/entities/{entity_id}/history")
+async def api_entity_history(
+    entity_id: str, limit: int = Query(100, ge=1, le=500),
+) -> dict[str, Any]:
+    """Get all events for a specific entity — used by tag drill-down."""
+    rows = await storage.get_entity_history(entity_id, limit=limit)
+    return {
+        "entity_id": entity_id,
+        "total": len(rows),
+        "items": [_to_response(r) for r in rows],
+    }
+
+
+@app.post("/api/events/{event_id}/bookmark")
+async def api_bookmark(
+    event_id: str, body: BookmarkRequest,
+) -> dict[str, bool]:
+    ok = await storage.bookmark(event_id, body.note)
+    return {"ok": ok}
+
+
+@app.get("/health", response_model=HealthResponse)
+async def api_health() -> HealthResponse:
+    client = ha_client or HAClient(settings, on_event=_process_ha_event)
+    return await get_health(storage, client)
+
+
+@app.get("/metrics")
+async def api_metrics() -> Response:
+    event_count = await storage.get_event_count()
+    db_size = await storage.get_db_size()
+    ws_connected = ha_client.connected if ha_client else False
+    text = get_metrics_text(event_count, db_size, ws_connected)
+    return Response(content=text, media_type="text/plain")
+
+
+# ─── Static frontend files ──────────────────────────────
+
+_frontend_dir = settings.frontend_dir
+if os.path.isdir(_frontend_dir):
+    app.mount(
+        "/",
+        StaticFiles(directory=_frontend_dir, html=True),
+        name="frontend",
+    )
+
+
+# ─── Entry point ─────────────────────────────────────────
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "backend.main:app",
+        host=settings.host,
+        port=settings.port,
+        log_level=settings.log_level.lower(),
+    )
