@@ -1,0 +1,16 @@
+.git/
+.gitignore
+.dockerignore
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.*
+frontend/node_modules/
+frontend/dist/
+DOCS.md
+repository.yaml

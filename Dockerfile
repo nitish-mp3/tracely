@@ -1,4 +1,18 @@
+# ARG must be before the first FROM so Docker can use it in any FROM instruction.
+# HA Supervisor passes --build-arg BUILD_FROM=<arch-specific base image>.
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
+
+# ── Stage 1: build the Svelte frontend ───────────────────────────────────────
+FROM node:20-alpine AS frontend-builder
+
+WORKDIR /frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci --ignore-scripts
+
+COPY frontend/ ./
+RUN npm run build
+
+# ── Stage 2: runtime image ────────────────────────────────────────────────────
 FROM ${BUILD_FROM}
 
 WORKDIR /app
@@ -16,10 +30,11 @@ RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirement
 # Copy backend source
 COPY backend/ ./backend/
 
-# Copy pre-built frontend (built in CI, not at container runtime)
-COPY frontend/dist/ ./frontend/dist/
+# Copy frontend build output from stage 1
+COPY --from=frontend-builder /frontend/dist/ ./frontend/dist/
 
-# Copy logo for addon icon
+# Copy logo for addon icon (already inside dist after Vite build copies public/)
+# Fallback: copy from source if not already present
 COPY frontend/logo.png ./frontend/dist/logo.png
 
 # Copy entrypoint
