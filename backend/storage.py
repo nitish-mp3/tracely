@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 import zlib
 from typing import Any
 
@@ -440,6 +441,101 @@ class Storage:
             return os.path.getsize(self._db_path)
         except OSError:
             return 0
+
+    async def get_activity_stats(self) -> dict[str, Any]:
+        """Comprehensive activity statistics for the stats dashboard."""
+        assert self._db is not None
+
+        # Total events
+        total_count = await self.get_event_count()
+
+        # Events per entity (top 50)
+        rows = await self._db.execute_fetchall(
+            """SELECT entity_id, COUNT(*) as cnt
+               FROM events WHERE entity_id IS NOT NULL
+               GROUP BY entity_id ORDER BY cnt DESC LIMIT 50""",
+        )
+        entity_counts = [{"entity_id": r["entity_id"], "count": r["cnt"]} for r in rows]
+
+        # Events per domain
+        rows = await self._db.execute_fetchall(
+            """SELECT domain, COUNT(*) as cnt
+               FROM events WHERE domain IS NOT NULL
+               GROUP BY domain ORDER BY cnt DESC""",
+        )
+        domain_counts = [{"domain": r["domain"], "count": r["cnt"]} for r in rows]
+
+        # Events per event_type
+        rows = await self._db.execute_fetchall(
+            """SELECT event_type, COUNT(*) as cnt
+               FROM events GROUP BY event_type ORDER BY cnt DESC""",
+        )
+        type_counts = [{"event_type": r["event_type"], "count": r["cnt"]} for r in rows]
+
+        # Hourly distribution (last 24h)
+        now_ms = int(time.time() * 1000)
+        day_ago = now_ms - 86400000
+        rows = await self._db.execute_fetchall(
+            """SELECT (timestamp / 3600000) % 24 as hour, COUNT(*) as cnt
+               FROM events WHERE timestamp >= ?
+               GROUP BY hour ORDER BY hour""",
+            (day_ago,),
+        )
+        hourly = [{"hour": r["hour"], "count": r["cnt"]} for r in rows]
+
+        # Daily distribution (last 30 days)
+        month_ago = now_ms - 2592000000
+        rows = await self._db.execute_fetchall(
+            """SELECT timestamp / 86400000 as day, COUNT(*) as cnt
+               FROM events WHERE timestamp >= ?
+               GROUP BY day ORDER BY day""",
+            (month_ago,),
+        )
+        daily = [{"day": r["day"], "count": r["cnt"]} for r in rows]
+
+        # Today vs yesterday
+        today_start = (now_ms // 86400000) * 86400000
+        yesterday_start = today_start - 86400000
+        rows = await self._db.execute_fetchall(
+            "SELECT COUNT(*) as cnt FROM events WHERE timestamp >= ?",
+            (today_start,),
+        )
+        today_count = rows[0]["cnt"] if rows else 0
+        rows = await self._db.execute_fetchall(
+            "SELECT COUNT(*) as cnt FROM events WHERE timestamp >= ? AND timestamp < ?",
+            (yesterday_start, today_start),
+        )
+        yesterday_count = rows[0]["cnt"] if rows else 0
+
+        # Confidence breakdown
+        rows = await self._db.execute_fetchall(
+            """SELECT confidence, COUNT(*) as cnt
+               FROM events GROUP BY confidence""",
+        )
+        confidence = {r["confidence"]: r["cnt"] for r in rows}
+
+        # Most active time of day (last 7 days)
+        week_ago = now_ms - 604800000
+        rows = await self._db.execute_fetchall(
+            """SELECT (timestamp / 3600000) % 24 as hour, COUNT(*) as cnt
+               FROM events WHERE timestamp >= ?
+               GROUP BY hour ORDER BY cnt DESC LIMIT 1""",
+            (week_ago,),
+        )
+        peak_hour = rows[0]["hour"] if rows else None
+
+        return {
+            "total_events": total_count,
+            "entity_counts": entity_counts,
+            "domain_counts": domain_counts,
+            "type_counts": type_counts,
+            "hourly_24h": hourly,
+            "daily_30d": daily,
+            "today_count": today_count,
+            "yesterday_count": yesterday_count,
+            "confidence": confidence,
+            "peak_hour": peak_hour,
+        }
 
     # ─── Purge ─────────────────────────────────────────────
 

@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     infer_window_ms: int = 3000
     dedup_window_ms: int = 500
 
+    # Historical backfill on startup (0 = disabled, >0 = days to backfill)
+    backfill_days: int = 7
+
     # Rate limiting
     rate_limit_requests: int = 100
     rate_limit_window_seconds: int = 60

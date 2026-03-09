@@ -92,6 +92,155 @@ class HAClient:
             logger.exception("ha_client.fetch_states_error")
             return []
 
+    def _http_base(self) -> str:
+        """Derive HTTP base URL from the WS URL."""
+        base = (
+            self._ws_url
+            .replace("wss://", "https://")
+            .replace("ws://", "http://")
+        )
+        # Strip the websocket path suffix
+        for suffix in ("/api/websocket", "/core/websocket"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+        # supervisor uses /core prefix for REST
+        if base.rstrip("/").endswith("/core"):
+            base = base.rstrip("/")[: -len("/core")]
+            base += "/core"
+        return base.rstrip("/")
+
+    async def fetch_history(
+        self,
+        days: int = 7,
+        on_event: Callable[[dict[str, Any]], Coroutine[Any, Any, None]] | None = None,
+    ) -> int:
+        """
+        Backfill historical state-change events from HA's history API.
+
+        Fetches up to `days` of history, converts each state entry into
+        a synthetic 'state_changed' event dict compatible with the normal
+        ingestion pipeline, and calls `on_event` (or self._on_event) for each.
+
+        Returns the count of events queued.
+        """
+        cb = on_event or self._on_event
+        if not self._session or self._session.closed:
+            self._session = aiohttp.ClientSession()
+
+        from datetime import datetime, timedelta, timezone
+        import urllib.parse
+
+        base = self._http_base()
+        headers = {"Authorization": f"Bearer {self._token}"}
+        start_dt = datetime.now(tz=timezone.utc) - timedelta(days=days)
+        start_iso = start_dt.isoformat()
+
+        # Use isoformat path segment (percent-encode colon)
+        period_path = urllib.parse.quote(start_iso, safe="T+-")
+
+        total = 0
+        # ── History API: state_changed events ─────────────────────
+        try:
+            url = f"{base}/api/history/period/{period_path}?minimal_response=false&no_attributes=false"
+            logger.info("ha_client.backfill_history.fetching", url=url, days=days)
+            async with self._session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status != 200:
+                    logger.warning("ha_client.backfill_history.failed", status=resp.status)
+                else:
+                    entity_histories: list[list[dict[str, Any]]] = await resp.json()
+                    for history_list in entity_histories:
+                        # Each list is a series of states for one entity
+                        prev_state = None
+                        for state in history_list:
+                            try:
+                                entity_id = state.get("entity_id", "")
+                                new_state = state.get("state", "")
+                                attributes = state.get("attributes", {})
+                                last_changed = state.get("last_changed") or state.get("last_updated", "")
+                                context = state.get("context", {})
+
+                                synthetic = {
+                                    "event_type": "state_changed",
+                                    "time_fired": last_changed,
+                                    "context": {
+                                        "id": context.get("id", ""),
+                                        "parent_id": context.get("parent_id"),
+                                        "user_id": context.get("user_id"),
+                                    },
+                                    "data": {
+                                        "entity_id": entity_id,
+                                        "old_state": {
+                                            "entity_id": entity_id,
+                                            "state": prev_state,
+                                            "attributes": {},
+                                        } if prev_state is not None else None,
+                                        "new_state": {
+                                            "entity_id": entity_id,
+                                            "state": new_state,
+                                            "attributes": attributes,
+                                            "last_changed": last_changed,
+                                        },
+                                    },
+                                    "_backfill": True,
+                                }
+                                await cb(synthetic)
+                                total += 1
+                                prev_state = new_state
+                            except Exception:
+                                logger.exception("ha_client.backfill_history.entry_error")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("ha_client.backfill_history.error")
+
+        # ── Logbook API: automation/script/service events ─────────
+        try:
+            url = f"{base}/api/logbook/{period_path}"
+            logger.info("ha_client.backfill_logbook.fetching", url=url)
+            async with self._session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status != 200:
+                    logger.warning("ha_client.backfill_logbook.failed", status=resp.status)
+                else:
+                    logbook: list[dict[str, Any]] = await resp.json()
+                    for entry in logbook:
+                        try:
+                            when = entry.get("when", "")
+                            domain = entry.get("domain", "")
+                            name = entry.get("name", "")
+                            message = entry.get("message", "")
+                            entity_id = entry.get("entity_id", "")
+                            context_id = entry.get("context_id", "")
+                            context_user_id = entry.get("context_user_id")
+
+                            # Map to a logbook_entry-style event
+                            synthetic = {
+                                "event_type": "logbook_entry",
+                                "time_fired": when,
+                                "context": {
+                                    "id": context_id or "",
+                                    "parent_id": None,
+                                    "user_id": context_user_id,
+                                },
+                                "data": {
+                                    "name": name,
+                                    "message": message,
+                                    "entity_id": entity_id or None,
+                                    "domain": domain or None,
+                                },
+                                "_backfill": True,
+                            }
+                            await cb(synthetic)
+                            total += 1
+                        except Exception:
+                            logger.exception("ha_client.backfill_logbook.entry_error")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("ha_client.backfill_logbook.error")
+
+        logger.info("ha_client.backfill_complete", total_queued=total)
+        return total
+
     # ─── Connection loop ───────────────────────────────────
 
     async def _connection_loop(self) -> None:

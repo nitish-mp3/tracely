@@ -8,6 +8,14 @@
   let domains = [];
   let areas = [];
 
+  // Searchable dropdown state
+  let entitySearch = '';
+  let domainSearch = '';
+  let areaSearch = '';
+  let entityDropOpen = false;
+  let domainDropOpen = false;
+  let areaDropOpen = false;
+
   onMount(async () => {
     try {
       const data = await getEntities();
@@ -20,27 +28,64 @@
 
   function handleClear() {
     $filters = {
-      entity: '',
-      domain: '',
-      area: '',
-      user_id: '',
-      event_type: '',
-      from: '',
-      to: '',
-      q: '',
-      bookmarksOnly: false,
-      inferredOnly: false,
+      entity: '', domain: '', area: '', user_id: '',
+      event_type: '', from: '', to: '', q: '',
+      bookmarksOnly: false, inferredOnly: false,
     };
+    entitySearch = ''; domainSearch = ''; areaSearch = '';
+  }
+  function handleClose() { $filtersOpen = false; }
+
+  // Searchable dropdown helpers
+  function selectEntity(entityId) {
+    $filters.entity = entityId;
+    entitySearch = '';
+    entityDropOpen = false;
+  }
+  function selectDomain(d) {
+    $filters.domain = d;
+    domainSearch = '';
+    domainDropOpen = false;
+  }
+  function selectArea(a) {
+    $filters.area = a;
+    areaSearch = '';
+    areaDropOpen = false;
+  }
+  function clearEntity() { $filters.entity = ''; }
+  function clearDomain() { $filters.domain = ''; }
+  function clearArea() { $filters.area = ''; }
+
+  function handleDropdownBlur(closeFn) {
+    // Delay so click on option registers first
+    setTimeout(() => closeFn(), 150);
   }
 
-  function handleClose() {
-    $filtersOpen = false;
-  }
+  $: filteredEntities = entitySearch
+    ? entities.filter(e => {
+        const q = entitySearch.toLowerCase();
+        return (e.entity_id && e.entity_id.toLowerCase().includes(q))
+          || (e.friendly_name && e.friendly_name.toLowerCase().includes(q));
+      }).slice(0, 50)
+    : entities.slice(0, 50);
+
+  $: filteredDomains = domainSearch
+    ? domains.filter(d => d.toLowerCase().includes(domainSearch.toLowerCase()))
+    : domains;
+
+  $: filteredAreas = areaSearch
+    ? areas.filter(a => a.toLowerCase().includes(areaSearch.toLowerCase()))
+    : areas;
 
   $: activeCount = Object.entries($filters).filter(([k, v]) => {
     if (typeof v === 'boolean') return v;
     return v !== '';
   }).length;
+
+  function friendlyName(entityId) {
+    const ent = entities.find(e => e.entity_id === entityId);
+    return ent?.friendly_name || entityId;
+  }
 </script>
 
 {#if $filtersOpen}
@@ -65,41 +110,147 @@
       <div class="section">
         <span class="section-title">Source</span>
 
-        <label class="filter-group">
+        <!-- Entity searchable dropdown -->
+        <div class="filter-group">
           <span class="label">Entity</span>
-          <div class="select-wrap">
-            <select class="select-field" bind:value={$filters.entity}>
-              <option value="">All entities</option>
-              {#each entities as ent}
-                <option value={ent.entity_id}>{ent.friendly_name || ent.entity_id}</option>
-              {/each}
-            </select>
-          </div>
-        </label>
+          {#if $filters.entity}
+            <div class="selected-chip">
+              <span class="chip-text">{friendlyName($filters.entity)}</span>
+              <button class="chip-clear" on:click={clearEntity} aria-label="Clear entity">
+                <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+              </button>
+            </div>
+          {:else}
+            <div class="searchable-select">
+              <div class="ss-input-wrap">
+                <svg class="ss-icon" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="6" r="4"/><path d="M9 9l3 3"/></svg>
+                <input
+                  class="ss-input"
+                  type="text"
+                  bind:value={entitySearch}
+                  on:focus={() => entityDropOpen = true}
+                  on:blur={() => handleDropdownBlur(() => entityDropOpen = false)}
+                  placeholder="Search entities…"
+                  aria-label="Search entities"
+                />
+                {#if entities.length > 0}
+                  <span class="ss-count">{entities.length}</span>
+                {/if}
+              </div>
+              {#if entityDropOpen}
+                <ul class="ss-dropdown">
+                  {#if filteredEntities.length === 0}
+                    <li class="ss-empty">No matches</li>
+                  {:else}
+                    {#each filteredEntities as ent}
+                      <li>
+                        <button class="ss-option" on:mousedown|preventDefault={() => selectEntity(ent.entity_id)}>
+                          <span class="ss-opt-name">{ent.friendly_name || ent.entity_id}</span>
+                          <span class="ss-opt-id">{ent.entity_id}</span>
+                        </button>
+                      </li>
+                    {/each}
+                    {#if entitySearch && filteredEntities.length >= 50}
+                      <li class="ss-more">Keep typing to narrow results…</li>
+                    {/if}
+                  {/if}
+                </ul>
+              {/if}
+            </div>
+          {/if}
+        </div>
 
-        <label class="filter-group">
+        <!-- Domain searchable dropdown -->
+        <div class="filter-group">
           <span class="label">Domain</span>
-          <div class="select-wrap">
-            <select class="select-field" bind:value={$filters.domain}>
-              <option value="">All domains</option>
-              {#each domains as d}
-                <option value={d}>{d}</option>
-              {/each}
-            </select>
-          </div>
-        </label>
+          {#if $filters.domain}
+            <div class="selected-chip domain-chip">
+              <span class="chip-text">{$filters.domain}</span>
+              <button class="chip-clear" on:click={clearDomain} aria-label="Clear domain">
+                <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+              </button>
+            </div>
+          {:else}
+            <div class="searchable-select">
+              <div class="ss-input-wrap">
+                <svg class="ss-icon" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="6" r="4"/><path d="M9 9l3 3"/></svg>
+                <input
+                  class="ss-input"
+                  type="text"
+                  bind:value={domainSearch}
+                  on:focus={() => domainDropOpen = true}
+                  on:blur={() => handleDropdownBlur(() => domainDropOpen = false)}
+                  placeholder="Search domains…"
+                  aria-label="Search domains"
+                />
+                {#if domains.length > 0}
+                  <span class="ss-count">{domains.length}</span>
+                {/if}
+              </div>
+              {#if domainDropOpen}
+                <ul class="ss-dropdown">
+                  {#if filteredDomains.length === 0}
+                    <li class="ss-empty">No matches</li>
+                  {:else}
+                    {#each filteredDomains as d}
+                      <li>
+                        <button class="ss-option" on:mousedown|preventDefault={() => selectDomain(d)}>
+                          <span class="ss-opt-name">{d}</span>
+                        </button>
+                      </li>
+                    {/each}
+                  {/if}
+                </ul>
+              {/if}
+            </div>
+          {/if}
+        </div>
 
-        <label class="filter-group">
+        <!-- Area searchable dropdown -->
+        <div class="filter-group">
           <span class="label">Area</span>
-          <div class="select-wrap">
-            <select class="select-field" bind:value={$filters.area}>
-              <option value="">All areas</option>
-              {#each areas as a}
-                <option value={a}>{a}</option>
-              {/each}
-            </select>
-          </div>
-        </label>
+          {#if $filters.area}
+            <div class="selected-chip area-chip">
+              <span class="chip-text">{$filters.area}</span>
+              <button class="chip-clear" on:click={clearArea} aria-label="Clear area">
+                <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+              </button>
+            </div>
+          {:else}
+            <div class="searchable-select">
+              <div class="ss-input-wrap">
+                <svg class="ss-icon" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="6" r="4"/><path d="M9 9l3 3"/></svg>
+                <input
+                  class="ss-input"
+                  type="text"
+                  bind:value={areaSearch}
+                  on:focus={() => areaDropOpen = true}
+                  on:blur={() => handleDropdownBlur(() => areaDropOpen = false)}
+                  placeholder="Search areas…"
+                  aria-label="Search areas"
+                />
+                {#if areas.length > 0}
+                  <span class="ss-count">{areas.length}</span>
+                {/if}
+              </div>
+              {#if areaDropOpen}
+                <ul class="ss-dropdown">
+                  {#if filteredAreas.length === 0}
+                    <li class="ss-empty">No matches</li>
+                  {:else}
+                    {#each filteredAreas as a}
+                      <li>
+                        <button class="ss-option" on:mousedown|preventDefault={() => selectArea(a)}>
+                          <span class="ss-opt-name">{a}</span>
+                        </button>
+                      </li>
+                    {/each}
+                  {/if}
+                </ul>
+              {/if}
+            </div>
+          {/if}
+        </div>
       </div>
 
       <div class="section-divider" />
@@ -124,12 +275,7 @@
 
         <label class="filter-group">
           <span class="label">User ID</span>
-          <input
-            class="input-field"
-            type="text"
-            bind:value={$filters.user_id}
-            placeholder="Filter by user..."
-          />
+          <input class="input-field" type="text" bind:value={$filters.user_id} placeholder="Filter by user..." />
         </label>
       </div>
 
@@ -187,205 +333,169 @@
 
 <style>
   .overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.5);
-    backdrop-filter: blur(4px);
-    -webkit-backdrop-filter: blur(4px);
-    z-index: 100;
-    animation: fadeIn var(--duration-fast) ease-out;
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+    z-index: 100; animation: fadeIn var(--duration-fast) ease-out;
   }
-
   .filter-drawer {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: 360px;
-    max-width: 92vw;
-    background: var(--color-bg);
-    border-left: 1px solid var(--color-border);
-    z-index: 101;
-    display: flex;
-    flex-direction: column;
+    position: fixed; top: 0; right: 0; bottom: 0; width: 380px; max-width: 92vw;
+    background: var(--color-bg); border-left: 1px solid var(--color-border);
+    z-index: 101; display: flex; flex-direction: column;
     animation: slideInRight var(--duration-normal) var(--ease-out);
     box-shadow: var(--shadow-lg);
   }
-
   .drawer-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--sp-4) var(--sp-5);
-    border-bottom: 1px solid var(--color-border);
-    background: var(--color-surface);
-    flex-shrink: 0;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface); flex-shrink: 0;
   }
-  .header-left {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-2);
-  }
-  .header-icon {
-    width: 18px;
-    height: 18px;
-    color: var(--color-primary);
-  }
-  .drawer-header h3 {
-    font-size: var(--text-lg);
-    font-weight: 700;
-    letter-spacing: -0.02em;
-  }
+  .header-left { display: flex; align-items: center; gap: var(--sp-2); }
+  .header-icon { width: 18px; height: 18px; color: var(--color-primary); }
+  .drawer-header h3 { font-size: var(--text-lg); font-weight: 700; letter-spacing: -0.02em; }
   .active-badge {
-    padding: 1px 7px;
-    border-radius: var(--radius-full);
-    background: var(--color-primary);
-    color: white;
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    min-width: 18px;
-    text-align: center;
+    padding: 1px 7px; border-radius: var(--radius-full);
+    background: var(--color-primary); color: white;
+    font-size: var(--text-2xs); font-weight: 600; min-width: 18px; text-align: center;
   }
   .close-btn {
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: var(--radius-md);
-    color: var(--color-text-muted);
-    transition: all var(--duration-fast);
+    width: 32px; height: 32px; display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius-md); color: var(--color-text-muted); transition: all var(--duration-fast);
   }
   .close-btn svg { width: 14px; height: 14px; }
-  .close-btn:hover {
-    background: var(--color-surface-hover);
-    color: var(--color-text);
-  }
+  .close-btn:hover { background: var(--color-surface-hover); color: var(--color-text); }
 
   .filter-body {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--sp-4) var(--sp-5);
-    display: flex;
-    flex-direction: column;
-    gap: 0;
+    flex: 1; overflow-y: auto; padding: var(--sp-4) var(--sp-5);
+    display: flex; flex-direction: column; gap: 0;
   }
-
-  .section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-3);
-    padding: var(--sp-3) 0;
-  }
+  .section { display: flex; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3) 0; }
   .section-title {
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--color-text-muted);
+    font-size: var(--text-2xs); font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--color-text-muted);
   }
-  .section-divider {
-    height: 1px;
-    background: var(--color-border);
-    margin: 0;
-  }
+  .section-divider { height: 1px; background: var(--color-border); }
 
-  .filter-group {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .label {
-    font-size: var(--text-sm);
-    font-weight: 500;
-    color: var(--color-text-secondary);
-  }
+  .filter-group { display: flex; flex-direction: column; gap: 6px; }
+  .label { font-size: var(--text-xs); font-weight: 500; color: var(--color-text-secondary); }
 
-  .date-row {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--sp-2);
+  /* Searchable select */
+  .searchable-select { position: relative; }
+  .ss-input-wrap {
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 10px; height: 38px;
+    border-radius: var(--radius-md); border: 1px solid var(--color-border);
+    background: var(--color-bg-elevated); transition: all var(--duration-fast);
   }
-  .date-input-wrap {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-  .date-label {
-    font-size: var(--text-2xs);
-    font-weight: 500;
-    color: var(--color-text-muted);
-  }
-  .date-arrow {
-    width: 16px;
-    height: 16px;
-    color: var(--color-text-muted);
-    flex-shrink: 0;
-    margin-bottom: 10px;
-  }
-
-  /* Toggle switch */
-  .toggle-row {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-3);
-    cursor: pointer;
-    padding: 4px 0;
-  }
-  .toggle-track {
-    position: relative;
-    width: 36px;
-    height: 20px;
-    border-radius: var(--radius-full);
-    background: var(--color-surface-active);
-    transition: background var(--duration-fast);
-    flex-shrink: 0;
-  }
-  .toggle-track.active {
-    background: var(--color-primary);
-  }
-  .toggle-track input {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    cursor: pointer;
-  }
-  .toggle-thumb {
-    position: absolute;
-    top: 2px;
-    left: 2px;
-    width: 16px;
-    height: 16px;
-    border-radius: 50%;
-    background: white;
-    transition: transform var(--duration-fast) var(--ease-out);
-    pointer-events: none;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-  }
-  .toggle-track.active .toggle-thumb {
-    transform: translateX(16px);
-  }
-  .toggle-label {
-    font-size: var(--text-sm);
-    color: var(--color-text-secondary);
-  }
-
-  .drawer-footer {
-    padding: var(--sp-4) var(--sp-5);
-    border-top: 1px solid var(--color-border);
-    display: flex;
-    gap: var(--sp-3);
-    flex-shrink: 0;
+  .ss-input-wrap:focus-within {
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px var(--color-primary-soft);
     background: var(--color-surface);
   }
-  .drawer-footer .btn {
-    flex: 1;
-    justify-content: center;
+  .ss-icon { width: 13px; height: 13px; color: var(--color-text-muted); flex-shrink: 0; }
+  .ss-input {
+    flex: 1; border: none; background: none; color: var(--color-text);
+    font-size: var(--text-sm); outline: none; padding: 0; min-width: 0;
   }
-  .drawer-footer .btn svg {
-    width: 14px;
-    height: 14px;
+  .ss-input::placeholder { color: var(--color-text-muted); }
+  .ss-count {
+    font-size: 10px; color: var(--color-text-muted); font-weight: 500;
+    padding: 1px 6px; border-radius: var(--radius-full);
+    background: var(--color-surface-hover); white-space: nowrap;
+  }
+  .ss-dropdown {
+    position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
+    max-height: 240px; overflow-y: auto; margin-top: 4px;
+    background: var(--color-surface); border: 1px solid var(--color-border);
+    border-radius: var(--radius-md); box-shadow: var(--shadow-lg);
+    list-style: none; padding: 4px;
+    animation: fadeIn var(--duration-fast) var(--ease-out);
+  }
+  .ss-option {
+    display: flex; flex-direction: column; gap: 1px;
+    width: 100%; text-align: left; padding: 8px 10px;
+    border-radius: var(--radius-sm); transition: all var(--duration-fast);
+    cursor: pointer;
+  }
+  .ss-option:hover { background: var(--color-surface-hover); }
+  .ss-opt-name { font-size: var(--text-sm); font-weight: 500; color: var(--color-text); }
+  .ss-opt-id { font-size: 10px; font-family: var(--font-mono); color: var(--color-text-muted); }
+  .ss-empty, .ss-more {
+    padding: 10px; text-align: center; font-size: var(--text-xs);
+    color: var(--color-text-muted); font-style: italic;
+  }
+
+  /* Selected chip */
+  .selected-chip {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 10px; border-radius: var(--radius-md);
+    background: var(--color-primary-soft); border: 1px solid rgba(124,92,252,.2);
+    font-size: var(--text-sm); color: var(--color-primary); font-weight: 500;
+  }
+  .selected-chip.domain-chip { background: var(--color-info-soft); border-color: rgba(56,189,248,.2); color: var(--color-info); }
+  .selected-chip.area-chip { background: var(--color-warning-soft); border-color: rgba(251,191,36,.2); color: var(--color-warning); }
+  .chip-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip-clear {
+    flex-shrink: 0; width: 18px; height: 18px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%; transition: all var(--duration-fast);
+    opacity: 0.6;
+  }
+  .chip-clear svg { width: 10px; height: 10px; }
+  .chip-clear:hover { opacity: 1; background: rgba(255,255,255,.1); }
+
+  /* Standard fields */
+  .select-wrap { position: relative; }
+  .select-field {
+    width: 100%; padding: 8px 12px; border-radius: var(--radius-md);
+    border: 1px solid var(--color-border); background: var(--color-bg-elevated);
+    color: var(--color-text); font-size: var(--text-sm); outline: none;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 12 12' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 4.5l3 3 3-3' stroke='%236b7280' stroke-width='1.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center; background-size: 12px;
+    padding-right: 30px;
+  }
+  .select-field:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-soft); }
+  .input-field {
+    width: 100%; padding: 8px 12px; border-radius: var(--radius-md);
+    border: 1px solid var(--color-border); background: var(--color-bg-elevated);
+    color: var(--color-text); font-size: var(--text-sm); outline: none;
+  }
+  .input-field:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-soft); }
+  .input-field::placeholder { color: var(--color-text-muted); }
+
+  .date-row { display: flex; align-items: center; gap: var(--sp-2); }
+  .date-input-wrap { flex: 1; display: flex; flex-direction: column; gap: 3px; }
+  .date-label { font-size: var(--text-2xs); color: var(--color-text-muted); font-weight: 500; }
+  .date-arrow { width: 16px; height: 16px; color: var(--color-text-muted); flex-shrink: 0; margin-top: 14px; }
+
+  .toggle-row {
+    display: flex; align-items: center; gap: var(--sp-3);
+    padding: var(--sp-1) 0; cursor: pointer;
+  }
+  .toggle-track {
+    position: relative; width: 38px; height: 20px;
+    background: var(--color-surface-active); border-radius: var(--radius-full);
+    transition: background var(--duration-fast);
+  }
+  .toggle-track.active { background: var(--color-primary); }
+  .toggle-track input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .toggle-thumb {
+    position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+    border-radius: 50%; background: white; transition: transform var(--duration-fast);
+    box-shadow: 0 1px 2px rgba(0,0,0,.2);
+  }
+  .toggle-track.active .toggle-thumb { transform: translateX(18px); }
+  .toggle-label { font-size: var(--text-sm); color: var(--color-text-secondary); }
+
+  .drawer-footer {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: var(--sp-4) var(--sp-5); border-top: 1px solid var(--color-border);
+    background: var(--color-surface); flex-shrink: 0; gap: var(--sp-3);
+  }
+
+  @media (max-width: 480px) {
+    .filter-drawer { width: 100%; max-width: 100%; }
+    .date-row { flex-direction: column; }
+    .date-arrow { display: none; }
   }
 </style>

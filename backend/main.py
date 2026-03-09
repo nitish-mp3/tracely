@@ -277,6 +277,46 @@ async def _event_processor() -> None:
             logger.exception("event_processor.error")
 
 
+async def _run_backfill(client: HAClient, days: int) -> None:
+    """
+    Background task: backfill historical HA events.
+
+    - Waits for the HA client to connect before starting.
+    - Skips if the DB already has >= 500 events (subsequent restarts).
+    - Uses INSERT OR IGNORE so duplicates cause no harm.
+    - Runs with low priority by yielding to the event loop between batches.
+    """
+    # Wait for HA connection (max 30 s)
+    for _ in range(30):
+        if client.connected:
+            break
+        await asyncio.sleep(1)
+    else:
+        logger.warning("backfill.skipped_no_connection")
+        return
+
+    # Skip if we already appear to have historical data
+    try:
+        existing = await storage.get_event_count()
+    except Exception:
+        existing = 0
+
+    if existing >= 500:
+        logger.info("backfill.skipped_enough_data", existing=existing)
+        return
+
+    logger.info("backfill.starting", days=days, existing_events=existing)
+    try:
+        count = await client.fetch_history(days=days, on_event=_process_ha_event)
+        logger.info("backfill.done", events_queued=count)
+        # Let the processor drain
+        await asyncio.sleep(5)
+    except asyncio.CancelledError:
+        logger.info("backfill.cancelled")
+    except Exception:
+        logger.exception("backfill.error")
+
+
 def _fan_out_sse(record: EventRecord) -> None:
     """Push event to all connected SSE clients."""
     resp = _to_response(
@@ -339,6 +379,14 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             logger.exception("startup.entity_load_failed")
         await ha_client.start()
         logger.info("startup.ha_client_started")
+
+        # Historical backfill — runs as a background task so startup stays fast.
+        # Only triggers when backfill_days > 0.
+        if settings.backfill_days > 0:
+            asyncio.create_task(
+                _run_backfill(ha_client, settings.backfill_days),
+                name="backfill",
+            )
     else:
         logger.warning(
             "startup.no_token",
@@ -556,6 +604,12 @@ async def api_bookmark(
     return {"ok": ok}
 
 
+@app.get("/api/stats")
+async def api_stats() -> dict[str, Any]:
+    """Comprehensive activity statistics for the stats dashboard."""
+    return await storage.get_activity_stats()
+
+
 @app.get("/health", response_model=HealthResponse)
 async def api_health() -> HealthResponse:
     client = ha_client or HAClient(settings, on_event=_process_ha_event)
@@ -584,10 +638,42 @@ if os.path.isdir(_frontend_dir):
 
 # ─── Entry point ─────────────────────────────────────────
 
+def _find_free_port(preferred: int, host: str = "0.0.0.0") -> int:
+    """Try the preferred port first, then a range of fallbacks."""
+    import socket
+
+    fallback_ports = [preferred] + [p for p in range(8099, 8120) if p != preferred] + [8200, 8300, 8400, 8500]
+    for port in fallback_ports:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind((host, port))
+                logger.info("server.port_selected", port=port, preferred=preferred)
+                return port
+        except OSError:
+            logger.warning("server.port_in_use", port=port)
+    # Absolute last resort: let OS pick any free port
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        port = s.getsockname()[1]
+        logger.warning("server.port_os_assigned", port=port)
+        return port
+
+
 if __name__ == "__main__":
-    uvicorn.run(
+    _port = _find_free_port(settings.port, settings.host)
+    config = uvicorn.Config(
         "backend.main:app",
         host=settings.host,
-        port=settings.port,
+        port=_port,
         log_level=settings.log_level.lower(),
+        # Graceful shutdown
+        timeout_graceful_shutdown=10,
     )
+    server = uvicorn.Server(config)
+    try:
+        server.run()
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("server.shutdown_requested")
+    except Exception:
+        logger.exception("server.fatal_error")

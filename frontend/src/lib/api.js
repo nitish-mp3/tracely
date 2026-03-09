@@ -77,56 +77,76 @@ export async function getHealth() {
   return request('/health');
 }
 
-// ─── SSE stream (robust reconnection) ──────────────────
+// ─── Stats ──────────────────────────────────────────────
 
-export function subscribeEvents(onEvent, onStatus) {
-  let source = null;
-  let reconnectTimer = null;
-  let retryDelay = 1000;
-  let stopped = false;
+export async function getStats() {
+  return request('/api/stats');
+}
 
-  function connect() {
-    if (stopped) return;
-    const url = `${BASE}/api/events/stream`;
-    source = new EventSource(url);
+// ─── SSE stream (global singleton with robust reconnection) ─
 
-    source.onopen = () => {
-      retryDelay = 1000;
-      if (onStatus) onStatus('connected');
-    };
+let _sseSource = null;
+let _sseReconnectTimer = null;
+let _sseRetryDelay = 1000;
+let _sseStopped = false;
+let _sseListeners = new Set();
+let _sseStatusListeners = new Set();
 
-    source.onmessage = (msg) => {
-      try {
-        const event = JSON.parse(msg.data);
-        onEvent(event);
-      } catch { /* skip invalid */ }
-    };
+function _sseConnect() {
+  if (_sseStopped) return;
+  const url = `${BASE}/api/events/stream`;
+  _sseSource = new EventSource(url);
 
-    source.onerror = () => {
-      if (stopped) return;
-      source.close();
-      if (onStatus) onStatus('reconnecting');
-      reconnectTimer = setTimeout(() => {
-        retryDelay = Math.min(retryDelay * 1.5, 30000);
-        connect();
-      }, retryDelay);
-    };
+  _sseSource.onopen = () => {
+    _sseRetryDelay = 1000;
+    _sseStatusListeners.forEach(fn => fn('connected'));
+  };
+
+  _sseSource.onmessage = (msg) => {
+    try {
+      const event = JSON.parse(msg.data);
+      _sseListeners.forEach(fn => fn(event));
+    } catch { /* skip invalid */ }
+  };
+
+  _sseSource.onerror = () => {
+    if (_sseStopped) return;
+    _sseSource.close();
+    _sseStatusListeners.forEach(fn => fn('reconnecting'));
+    _sseReconnectTimer = setTimeout(() => {
+      _sseRetryDelay = Math.min(_sseRetryDelay * 1.5, 30000);
+      _sseConnect();
+    }, _sseRetryDelay);
+  };
+}
+
+function _handleVisibility() {
+  if (!document.hidden && _sseSource && _sseSource.readyState === EventSource.CLOSED) {
+    _sseConnect();
   }
+}
+document.addEventListener('visibilitychange', _handleVisibility);
 
-  connect();
+// Auto-start SSE on module load
+_sseConnect();
 
-  // Also reconnect when page becomes visible again
-  function handleVisibility() {
-    if (!document.hidden && source && source.readyState === EventSource.CLOSED) {
-      connect();
+/**
+ * Subscribe to SSE events. Returns unsubscribe function.
+ * This is a global singleton — SSE connection stays alive
+ * regardless of component lifecycle.
+ */
+export function subscribeEvents(onEvent, onStatus) {
+  _sseListeners.add(onEvent);
+  if (onStatus) {
+    _sseStatusListeners.add(onStatus);
+    // Report current status immediately
+    if (_sseSource) {
+      onStatus(_sseSource.readyState === EventSource.OPEN ? 'connected' : 'reconnecting');
     }
   }
-  document.addEventListener('visibilitychange', handleVisibility);
 
   return () => {
-    stopped = true;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    if (source) source.close();
-    document.removeEventListener('visibilitychange', handleVisibility);
+    _sseListeners.delete(onEvent);
+    if (onStatus) _sseStatusListeners.delete(onStatus);
   };
 }

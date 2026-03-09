@@ -3,6 +3,7 @@
   import TraceView from './views/TraceView.svelte';
   import Filters from './views/Filters.svelte';
   import Search from './views/Search.svelte';
+  import Stats from './views/Stats.svelte';
   import Toast from './components/Toast.svelte';
   import { currentView, filtersOpen, healthStatus, addToast } from './stores/config.js';
   import { filters, hasActiveFilters } from './stores/events.js';
@@ -79,6 +80,16 @@
           </svg>
           Search
         </button>
+        <button
+          class="nav-pill"
+          class:active={$currentView === 'stats'}
+          on:click={() => handleNav('stats')}
+        >
+          <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <rect x="2" y="9" width="2.5" height="5" rx="0.5" /><rect x="6.75" y="5" width="2.5" height="9" rx="0.5" /><rect x="11.5" y="2" width="2.5" height="12" rx="0.5" />
+          </svg>
+          Stats
+        </button>
       </nav>
     </div>
 
@@ -130,6 +141,8 @@
       <TraceView />
     {:else if $currentView === 'search'}
       <Search />
+    {:else if $currentView === 'stats'}
+      <Stats />
     {/if}
   </main>
 

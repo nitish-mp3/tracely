@@ -46,6 +46,7 @@
   let panX = 0, panY = 0, zoom = 1;
   let isPanning = false;
   let panStart = { x: 0, y: 0, panX: 0, panY: 0 };
+  let lastPinchDist = 0;
 
   // Keyboard focus
   let focusedIdx = -1;
@@ -240,15 +241,40 @@
     if (e.touches.length === 1) {
       isPanning = true;
       panStart = { x: e.touches[0].clientX, y: e.touches[0].clientY, panX, panY };
+    } else if (e.touches.length === 2) {
+      isPanning = false;
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      lastPinchDist = Math.hypot(dx, dy);
+      panStart = {
+        x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
+        y: (e.touches[0].clientY + e.touches[1].clientY) / 2,
+        panX, panY
+      };
     }
   }
   function handleGraphTouchMove(e) {
-    if (!isPanning || e.touches.length !== 1) return;
     e.preventDefault();
-    panX = panStart.panX + (e.touches[0].clientX - panStart.x);
-    panY = panStart.panY + (e.touches[0].clientY - panStart.y);
+    if (e.touches.length === 1 && isPanning) {
+      panX = panStart.panX + (e.touches[0].clientX - panStart.x);
+      panY = panStart.panY + (e.touches[0].clientY - panStart.y);
+    } else if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.hypot(dx, dy);
+      if (lastPinchDist > 0) {
+        const scale = dist / lastPinchDist;
+        zoom = Math.max(0.2, Math.min(3, zoom * scale));
+      }
+      lastPinchDist = dist;
+      // Two-finger pan: track midpoint movement
+      const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      panX = panStart.panX + (midX - panStart.x);
+      panY = panStart.panY + (midY - panStart.y);
+    }
   }
-  function handleGraphTouchEnd() { isPanning = false; }
+  function handleGraphTouchEnd() { isPanning = false; lastPinchDist = 0; }
 
   function resetView() { panX = 0; panY = 0; zoom = 1; }
 

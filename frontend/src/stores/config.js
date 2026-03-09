@@ -3,7 +3,7 @@
  */
 import { writable } from 'svelte/store';
 
-// Current view: 'timeline' | 'trace' | 'search'
+// Current view: 'timeline' | 'trace' | 'search' | 'stats'
 export const currentView = writable('timeline');
 
 // Sidebar / filter drawer open
