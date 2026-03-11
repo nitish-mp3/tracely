@@ -274,29 +274,83 @@ class Storage:
 
     # ─── FTS search ────────────────────────────────────────
 
-    async def search_fts(self, query: str, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    @staticmethod
+    def _fts_safe(query: str) -> str:
+        """Strip FTS5 special characters so raw user input can't break the query."""
+        import re
+        # Remove FTS5 operators that could cause syntax errors
+        cleaned = re.sub(r'["*^()\-]', ' ', query)
+        # Collapse whitespace
+        return ' '.join(cleaned.split())
+
+    async def search_fts(
+        self,
+        query: str,
+        limit: int = 50,
+        offset: int = 0,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        entity: str | None = None,
+        domain: str | None = None,
+    ) -> list[dict[str, Any]]:
         assert self._db is not None
-        # Escape double-quotes for FTS safety
-        safe_query = query.replace('"', '""')
+        safe_query = self._fts_safe(query)
+        if not safe_query:
+            return []
+        # Get matching event IDs from FTS, then apply column filters
+        conditions: list[str] = ["e.id IN (SELECT event_id FROM events_fts WHERE events_fts MATCH ?)"]
+        params: list[Any] = [safe_query]
+        if entity:
+            conditions.append("e.entity_id = ?")
+            params.append(entity)
+        if domain:
+            conditions.append("e.domain = ?")
+            params.append(domain)
+        if from_ts is not None:
+            conditions.append("e.timestamp >= ?")
+            params.append(from_ts)
+        if to_ts is not None:
+            conditions.append("e.timestamp <= ?")
+            params.append(to_ts)
+        where = " WHERE " + " AND ".join(conditions)
         rows = await self._db.execute_fetchall(
-            """SELECT e.* FROM events e
-               JOIN events_fts fts ON fts.event_id = e.id
-               WHERE events_fts MATCH ?
-               ORDER BY e.timestamp DESC LIMIT ? OFFSET ?""",
-            (f'"{safe_query}"', limit, offset),
+            f"SELECT e.* FROM events e{where} ORDER BY e.timestamp DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
         )
         return [dict(r) for r in rows]
 
-    async def search_fts_count(self, query: str) -> int:
+    async def search_fts_count(
+        self,
+        query: str,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+        entity: str | None = None,
+        domain: str | None = None,
+    ) -> int:
         assert self._db is not None
-        safe_query = query.replace('"', '""')
-        row = await self._db.execute_fetchone(
-            """SELECT COUNT(*) FROM events e
-               JOIN events_fts fts ON fts.event_id = e.id
-               WHERE events_fts MATCH ?""",
-            (f'"{safe_query}"',),
+        safe_query = self._fts_safe(query)
+        if not safe_query:
+            return 0
+        conditions: list[str] = ["e.id IN (SELECT event_id FROM events_fts WHERE events_fts MATCH ?)"]
+        params: list[Any] = [safe_query]
+        if entity:
+            conditions.append("e.entity_id = ?")
+            params.append(entity)
+        if domain:
+            conditions.append("e.domain = ?")
+            params.append(domain)
+        if from_ts is not None:
+            conditions.append("e.timestamp >= ?")
+            params.append(from_ts)
+        if to_ts is not None:
+            conditions.append("e.timestamp <= ?")
+            params.append(to_ts)
+        where = " WHERE " + " AND ".join(conditions)
+        rows = await self._db.execute_fetchall(
+            f"SELECT COUNT(*) FROM events e{where}",
+            params,
         )
-        return row[0] if row else 0
+        return rows[0][0] if rows else 0
 
     # ─── Bookmark ──────────────────────────────────────────
 

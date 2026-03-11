@@ -10,7 +10,7 @@ Tracely is a **fully offline** Home Assistant add-on that automatically captures
 
 1. Open Home Assistant → **Settings** → **Add-ons** → **Add-on Store**
 2. Click the three-dot menu (⋮) → **Repositories**
-3. Add this repository URL: `https://github.com/nky001/tracely`
+3. Add this repository URL: `https://github.com/nitish-mp3/tracely`
 4. Find **Tracely** in the store and click **Install**
 5. Click **Start**
 6. Open the **Tracely** panel from the sidebar
@@ -100,4 +100,4 @@ Tracely exposes a REST API for programmatic access:
 
 ## Support
 
-File issues at: `https://github.com/nky001/tracely/issues`
+File issues at: `https://github.com/nitish-mp3/tracely/issues`

@@ -439,6 +439,21 @@ app.add_middleware(
 )
 
 
+class _NoCacheHTMLMiddleware(BaseHTTPMiddleware):
+    """Ensure index.html is never browser-cached so addon updates take effect immediately."""
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        response = await call_next(request)
+        content_type = response.headers.get("content-type", "")
+        if "text/html" in content_type:
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+        return response
+
+
+app.add_middleware(_NoCacheHTMLMiddleware)
+
+
 # ─── API endpoints ───────────────────────────────────────
 
 
@@ -463,10 +478,20 @@ async def api_get_events(
     if from_ts is not None and to_ts is None:
         to_ts = _epoch_ms()
 
+    # When full-text search query is present, use FTS with all filters combined
     if q:
-        rows = await storage.search_fts(q, limit=limit)
+        offset = (page - 1) * limit
+        rows = await storage.search_fts(
+            q, limit=limit, offset=offset,
+            from_ts=from_ts, to_ts=to_ts,
+            entity=entity, domain=domain,
+        )
+        total = await storage.search_fts_count(
+            q, from_ts=from_ts, to_ts=to_ts,
+            entity=entity, domain=domain,
+        )
         return PaginatedEvents(
-            total=len(rows), page=1, limit=limit,
+            total=total, page=page, limit=limit,
             items=[_to_response(r) for r in rows],
         )
 
@@ -567,11 +592,28 @@ async def api_get_event(event_id: str) -> dict[str, Any]:
 
 @app.get("/api/search", response_model=PaginatedEvents)
 async def api_search(
-    q: str = "", limit: int = Query(50, ge=1, le=500),
+    request: Request,
+    q: str = "",
+    limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    entity: str | None = Query(None),
+    domain: str | None = Query(None),
 ) -> PaginatedEvents:
-    rows = await storage.search_fts(q, limit=limit, offset=offset)
-    total = await storage.search_fts_count(q)
+    from_str = request.query_params.get("from")
+    to_str = request.query_params.get("to")
+    from_ts = _parse_timestamp(from_str)
+    to_ts = _parse_timestamp(to_str)
+    if from_ts is not None and to_ts is None:
+        to_ts = _epoch_ms()
+    rows = await storage.search_fts(
+        q, limit=limit, offset=offset,
+        from_ts=from_ts, to_ts=to_ts,
+        entity=entity, domain=domain,
+    )
+    total = await storage.search_fts_count(
+        q, from_ts=from_ts, to_ts=to_ts,
+        entity=entity, domain=domain,
+    )
     return PaginatedEvents(
         total=total, page=1, limit=limit,
         items=[_to_response(r) for r in rows],
