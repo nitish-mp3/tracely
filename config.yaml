@@ -1,5 +1,5 @@
 name: "Tracely"
-version: "2.8.9"
+version: "2.9.0"
 slug: "tracely"
 description: "Offline causal event tracing for Home Assistant — see human-readable, searchable, interactive causal trees and timelines of everything that happened."
 url: "https://github.com/nky001/tracely"
