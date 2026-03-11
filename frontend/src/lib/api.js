@@ -49,8 +49,11 @@ export async function bookmarkEvent(id, note = '') {
 
 // ─── Search ────────────────────────────────────────────
 
-export async function searchEvents(q, limit = 50, offset = 0) {
+export async function searchEvents(q, limit = 50, offset = 0, extraParams = {}) {
   const qs = new URLSearchParams({ q, limit, offset });
+  for (const [k, v] of Object.entries(extraParams)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v);
+  }
   return request(`/api/search?${qs}`);
 }
 

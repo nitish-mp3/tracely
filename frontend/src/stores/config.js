@@ -9,6 +9,9 @@ export const currentView = writable('timeline');
 // Sidebar / filter drawer open
 export const filtersOpen = writable(false);
 
+// Incremented each time user explicitly clicks "Apply filters" — subscribers can watch this to force-reload
+export const filtersApplied = writable(0);
+
 // Health status
 export const healthStatus = writable(null);
 

@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { getEntities } from '../lib/api.js';
   import { filters, hasActiveFilters } from '../stores/events.js';
-  import { filtersOpen, availableEntities } from '../stores/config.js';
+  import { filtersOpen, availableEntities, filtersApplied } from '../stores/config.js';
 
   let entities = [];
   let domains = [];
@@ -35,6 +35,10 @@
     entitySearch = ''; domainSearch = ''; areaSearch = '';
   }
   function handleClose() { $filtersOpen = false; }
+  function handleApply() {
+    $filtersApplied += 1;  // explicit signal for Timeline/Search to reload
+    $filtersOpen = false;
+  }
 
   // Searchable dropdown helpers
   function selectEntity(entityId) {
@@ -354,7 +358,7 @@
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 4h12M5 4V3a1 1 0 011-1h4a1 1 0 011 1v1M6 7v5M10 7v5" /></svg>
         Clear all
       </button>
-      <button class="btn btn-primary" on:click={handleClose}>Apply filters</button>
+      <button class="btn btn-primary" on:click={handleApply}>Apply filters</button>
     </footer>
   </aside>
 {/if}

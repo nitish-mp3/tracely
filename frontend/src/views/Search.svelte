@@ -4,7 +4,7 @@
   import EntityHistory from '../components/EntityHistory.svelte';
   import { searchEvents } from '../lib/api.js';
   import { selectedEventId, filters, selectedEntityTag, selectedDomainTag } from '../stores/events.js';
-  import { currentView } from '../stores/config.js';
+  import { currentView, filtersApplied } from '../stores/config.js';
 
   let query = '';
   let results = [];
@@ -15,8 +15,18 @@
   let offset = 0;
   const LIMIT = 50;
 
+  function _buildExtraParams() {
+    const p = {};
+    if ($filters.entity) p.entity = $filters.entity;
+    if ($filters.domain) p.domain = $filters.domain;
+    if ($filters.from)   p['from'] = $filters.from;
+    if ($filters.to)     p['to'] = $filters.to;
+    return p;
+  }
+
   async function handleSearch(append = false) {
-    if (!query.trim()) return;
+    const q = query.trim();
+    if (!q) return;
     if (!append) {
       searching = true;
       searched = true;
@@ -26,7 +36,7 @@
       loadingMore = true;
     }
     try {
-      const data = await searchEvents(query.trim(), LIMIT, offset);
+      const data = await searchEvents(q, LIMIT, offset, _buildExtraParams());
       const items = data.items || [];
       if (append) {
         results = [...results, ...items];
@@ -57,13 +67,8 @@
     $currentView = 'trace';
   }
 
-  function handleEntityTagClick(entityId) {
-    $selectedEntityTag = entityId;
-  }
-
-  function handleDomainTagClick(domain) {
-    $selectedDomainTag = domain;
-  }
+  function handleEntityTagClick(entityId) { $selectedEntityTag = entityId; }
+  function handleDomainTagClick(domain)   { $selectedDomainTag = domain;   }
 
   function handleClear() {
     query = '';
@@ -75,13 +80,60 @@
 
   // Sync with header search bar on mount
   onMount(() => {
-    if ($filters.q && !query) {
+    if ($filters.q) {
       query = $filters.q;
       handleSearch();
     }
   });
 
+  // Re-run search when user explicitly clicks "Apply filters"
+  $: if (searched && $filtersApplied) {
+    handleSearch(false);
+  }
+
+  // Re-run search when filter context changes (entity / domain / time window)
+  let prevFilterCtx = '';
+  $: {
+    const ctx = JSON.stringify({
+      entity: $filters.entity,
+      domain: $filters.domain,
+      from: $filters.from,
+      to: $filters.to,
+    });
+    if (searched && ctx !== prevFilterCtx) {
+      prevFilterCtx = ctx;
+      handleSearch(false);
+    } else {
+      prevFilterCtx = ctx;
+    }
+  }
+
   $: hasMore = results.length < total;
+
+  // Active filter chips for display
+  $: activeFilterChips = [
+    $filters.entity  && { key: 'entity',  label: $filters.entity },
+    $filters.domain  && { key: 'domain',  label: $filters.domain },
+    ($filters.from || $filters.to) && {
+      key: 'time',
+      label: $filters.from && $filters.to
+        ? `${fmtDate($filters.from)} → ${fmtDate($filters.to)}`
+        : $filters.from ? `From ${fmtDate($filters.from)}`
+        : `Until ${fmtDate($filters.to)}`,
+    },
+  ].filter(Boolean);
+
+  function fmtDate(iso) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+    catch { return iso; }
+  }
+
+  function clearFilterChip(key) {
+    if (key === 'entity') $filters = { ...$filters, entity: '' };
+    if (key === 'domain') $filters = { ...$filters, domain: '' };
+    if (key === 'time')   $filters = { ...$filters, from: '', to: '' };
+  }
 </script>
 
 <section class="search-view" aria-label="Search">
@@ -93,7 +145,7 @@
         class="search-input"
         bind:value={query}
         on:keydown={handleKeydown}
-        placeholder="Search events by name, entity, or payload..."
+        placeholder="Search by name, entity, or payload… (Enter)"
         aria-label="Search events"
       />
       {#if query}
@@ -102,15 +154,28 @@
         </button>
       {/if}
     </div>
-    <button class="btn btn-primary search-btn" on:click={handleSearch} disabled={searching || !query.trim()}>
+    <button class="btn btn-primary search-btn" on:click={() => handleSearch()} disabled={searching || !query.trim()}>
       {#if searching}
-        <span class="spinner" />
-        Searching...
+        <span class="spinner" /> Searching…
       {:else}
         Search
       {/if}
     </button>
   </div>
+
+  {#if activeFilterChips.length > 0}
+    <div class="active-filters" aria-label="Active filters">
+      <span class="af-label">Filters:</span>
+      {#each activeFilterChips as chip (chip.key)}
+        <span class="af-chip">
+          {chip.label}
+          <button class="af-remove" on:click={() => clearFilterChip(chip.key)} aria-label="Remove {chip.key} filter">
+            <svg viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2l6 6M8 2l-6 6" /></svg>
+          </button>
+        </span>
+      {/each}
+    </div>
+  {/if}
 
   {#if searching}
     <div class="skeleton-list">
@@ -121,17 +186,15 @@
   {:else if searched && results.length === 0}
     <div class="state-card">
       <div class="state-icon empty-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-          <circle cx="11" cy="11" r="7" /><path d="M16 16l4 4" /><path d="M8 11h6" />
-        </svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="7" /><path d="M16 16l4 4" /><path d="M8 11h6" /></svg>
       </div>
       <h3>No results found</h3>
-      <p class="state-detail">No events matching "<strong>{query}</strong>"</p>
-      <p class="state-hint">Try a different term, entity_id, or keyword from a payload.</p>
+      <p class="state-detail">No events match "<strong>{query}</strong>"</p>
+      <p class="state-hint">Try a broader term or remove active filters.</p>
     </div>
   {:else if results.length > 0}
     <div class="results-header">
-      <span class="result-count">{total} result{total !== 1 ? 's' : ''} for "<strong>{query}</strong>"</span>
+      <span class="result-count">{total.toLocaleString()} result{total !== 1 ? 's' : ''} for "<strong>{query}</strong>"</span>
     </div>
     <ul class="result-list">
       {#each results as event, i (event.id)}
@@ -152,7 +215,7 @@
           {#if loadingMore}
             <span class="spinner" /> Loading…
           {:else}
-            Load more ({total - results.length} remaining)
+            Load {Math.min(LIMIT, total - results.length)} more of {total - results.length} remaining
           {/if}
         </button>
       </div>
@@ -162,13 +225,11 @@
   {:else}
     <div class="state-card">
       <div class="state-icon initial-icon">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-          <circle cx="11" cy="11" r="7" /><path d="M16 16l4 4" />
-        </svg>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="11" cy="11" r="7" /><path d="M16 16l4 4" /></svg>
       </div>
       <h3>Search events</h3>
       <p class="state-detail">Full-text search across all captured events.</p>
-      <p class="state-hint">Search by entity name, friendly name, or any text in the payload.</p>
+      <p class="state-hint">Use the Filters panel to narrow by entity, domain, or time window before searching.</p>
     </div>
   {/if}
 </section>
@@ -221,9 +282,7 @@
     border-color: var(--color-primary);
     box-shadow: 0 0 0 3px var(--color-primary-soft);
   }
-  .search-input::placeholder {
-    color: var(--color-text-muted);
-  }
+  .search-input::placeholder { color: var(--color-text-muted); }
   .clear-btn {
     position: absolute;
     right: 10px;
@@ -237,18 +296,58 @@
     transition: all var(--duration-fast);
   }
   .clear-btn svg { width: 12px; height: 12px; }
-  .clear-btn:hover {
-    color: var(--color-text);
-    background: var(--color-surface-hover);
-  }
+  .clear-btn:hover { color: var(--color-text); background: var(--color-surface-hover); }
   .search-btn {
     white-space: nowrap;
     min-width: 100px;
   }
-  .search-btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
+  .search-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* Active filter chips */
+  .active-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-1);
+    animation: fadeIn var(--duration-fast) var(--ease-out);
   }
+  .af-label {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .af-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px 3px 10px;
+    background: var(--color-primary-soft);
+    color: var(--color-primary);
+    border-radius: 999px;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .af-remove {
+    flex-shrink: 0;
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    opacity: 0.7;
+    transition: opacity var(--duration-fast);
+    color: inherit;
+  }
+  .af-remove:hover { opacity: 1; }
+  .af-remove svg { width: 8px; height: 8px; }
 
   .spinner {
     display: inline-block;
@@ -259,22 +358,15 @@
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
   }
-  @keyframes spin {
-    to { transform: rotate(360deg); }
-  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 
   .results-header {
     display: flex;
     align-items: center;
     padding: 0 var(--sp-1);
   }
-  .result-count {
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
-  }
-  .result-count strong {
-    color: var(--color-text);
-  }
+  .result-count { font-size: var(--text-sm); color: var(--color-text-muted); }
+  .result-count strong { color: var(--color-text); }
 
   .result-list {
     list-style: none;
@@ -282,11 +374,8 @@
     flex-direction: column;
     gap: var(--sp-1);
   }
-  .result-list li {
-    animation: fadeInScale var(--duration-normal) var(--ease-out) both;
-  }
+  .result-list li { animation: fadeInScale var(--duration-normal) var(--ease-out) both; }
 
-  /* State cards */
   .state-card {
     display: flex;
     flex-direction: column;
@@ -306,54 +395,18 @@
     border-radius: var(--radius-lg);
     margin-bottom: var(--sp-2);
   }
-  .state-icon svg {
-    width: 30px;
-    height: 30px;
-  }
-  .initial-icon {
-    color: var(--color-primary);
-    background: var(--color-primary-soft);
-  }
-  .empty-icon {
-    color: var(--color-text-muted);
-    background: var(--color-surface-hover);
-  }
-  .state-card h3 {
-    font-size: var(--text-md);
-    font-weight: 600;
-  }
-  .state-detail {
-    color: var(--color-text-secondary);
-    font-size: var(--text-sm);
-  }
-  .state-detail strong {
-    color: var(--color-text);
-  }
-  .state-hint {
-    color: var(--color-text-muted);
-    font-size: var(--text-xs);
-    max-width: 340px;
-  }
+  .state-icon svg { width: 30px; height: 30px; }
+  .initial-icon { color: var(--color-primary); background: var(--color-primary-soft); }
+  .empty-icon { color: var(--color-text-muted); background: var(--color-surface-hover); }
+  .state-card h3 { font-size: var(--text-md); font-weight: 600; }
+  .state-detail { color: var(--color-text-secondary); font-size: var(--text-sm); }
+  .state-detail strong { color: var(--color-text); }
+  .state-hint { color: var(--color-text-muted); font-size: var(--text-xs); max-width: 340px; }
 
-  .skeleton-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--sp-2);
-  }
-  .skeleton-list .skeleton {
-    border-radius: var(--radius-md);
-    animation-fill-mode: both;
-  }
+  .skeleton-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .skeleton-list .skeleton { border-radius: var(--radius-md); animation-fill-mode: both; }
 
-  .load-more-wrap {
-    display: flex; justify-content: center; padding: var(--sp-3) 0;
-  }
-  .load-more-btn {
-    display: inline-flex; align-items: center; gap: var(--sp-2);
-    padding: var(--sp-2) var(--sp-5); font-size: var(--text-sm);
-  }
-  .end-indicator {
-    text-align: center; padding: var(--sp-3) 0; color: var(--color-text-muted);
-    font-size: var(--text-xs); opacity: 0.7;
-  }
+  .load-more-wrap { display: flex; justify-content: center; padding: var(--sp-3) 0; }
+  .load-more-btn { display: inline-flex; align-items: center; gap: var(--sp-2); padding: var(--sp-2) var(--sp-5); font-size: var(--text-sm); }
+  .end-indicator { text-align: center; padding: var(--sp-3) 0; color: var(--color-text-muted); font-size: var(--text-xs); opacity: 0.7; }
 </style>

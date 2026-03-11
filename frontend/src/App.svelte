@@ -58,7 +58,11 @@
     return () => clearInterval(healthInterval);
   });
 
-  // Sync header search with filter q
+  // Keep header search in sync with filters.q (bidirectional)
+  $: if ($filters.q !== searchQuery && $filters.q === '') {
+    // Filters were cleared externally — clear header input too
+    searchQuery = '';
+  }
   $: if ($currentView === 'search' && $filters.q && !searchQuery) {
     searchQuery = $filters.q;
   }

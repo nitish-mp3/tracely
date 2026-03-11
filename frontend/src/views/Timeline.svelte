@@ -8,7 +8,7 @@
     events, pagination, filters, loading, error,
     selectedEventId, sseStatus, selectedEntityTag, selectedDomainTag,
   } from '../stores/events.js';
-  import { currentView } from '../stores/config.js';
+  import { currentView, filtersApplied } from '../stores/config.js';
 
   let unsubSSE = null;
   let liveCount = 0;
@@ -112,15 +112,10 @@
     if (observer) observer.disconnect();
   });
 
-  // Only reload on filter changes after mount (skip initial reactive trigger)
-  let prevFilterStr = '';
-  $: {
-    const filterStr = JSON.stringify($filters);
-    if (mounted && filterStr !== prevFilterStr) {
-      prevFilterStr = filterStr;
-      hasMore = true;
-      loadEvents(false);
-    }
+  // Reload when user explicitly presses "Apply filters"
+  $: if (mounted && $filtersApplied) {
+    hasMore = true;
+    loadEvents(false);
   }
 
   // Wire up IntersectionObserver when sentinel DOM element is bound
