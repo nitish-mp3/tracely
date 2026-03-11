@@ -2,10 +2,11 @@
   import { onMount, onDestroy } from 'svelte';
   import EventNode from '../components/EventNode.svelte';
   import EntityHistory from '../components/EntityHistory.svelte';
+  import DomainHistory from '../components/DomainHistory.svelte';
   import { getEvents, subscribeEvents } from '../lib/api.js';
   import {
     events, pagination, filters, loading, error,
-    selectedEventId, sseStatus, selectedEntityTag,
+    selectedEventId, sseStatus, selectedEntityTag, selectedDomainTag,
   } from '../stores/events.js';
   import { currentView } from '../stores/config.js';
 
@@ -14,13 +15,21 @@
   let liveIndicator = false;
   let blinkTimer = null;
   let mounted = false;
-  let jumpPage = '';
+  let loadingMore = false;
+  let hasMore = true;
+  let sentinel = null;
+  let observer = null;
 
-  async function loadEvents() {
-    $loading = true;
-    $error = null;
+  async function loadEvents(append = false) {
+    if (!append) {
+      $loading = true;
+      $error = null;
+    } else {
+      loadingMore = true;
+    }
     try {
-      const params = { page: $pagination.page, limit: $pagination.limit };
+      const page = append ? $pagination.page : 1;
+      const params = { page, limit: $pagination.limit };
       if ($filters.entity) params.entity = $filters.entity;
       if ($filters.domain) params.domain = $filters.domain;
       if ($filters.area) params.area = $filters.area;
@@ -30,13 +39,27 @@
       if ($filters.from) params.from = $filters.from;
       if ($filters.to) params.to = $filters.to;
       const data = await getEvents(params);
-      $events = data.items || [];
+      const items = data.items || [];
+      if (append) {
+        $events = [...$events, ...items];
+      } else {
+        $events = items;
+        $pagination = { ...$pagination, page: 1 };
+      }
       $pagination = { ...$pagination, total: data.total };
+      hasMore = $events.length < data.total;
     } catch (e) {
       $error = e.message;
     } finally {
       $loading = false;
+      loadingMore = false;
     }
+  }
+
+  function loadNextPage() {
+    if (loadingMore || !hasMore) return;
+    $pagination = { ...$pagination, page: $pagination.page + 1 };
+    loadEvents(true);
   }
 
   function handleEventClick(event) {
@@ -48,32 +71,8 @@
     $selectedEntityTag = entityId;
   }
 
-  function handlePage(dir) {
-    const next = $pagination.page + dir;
-    if (next >= 1 && next <= maxPage) {
-      $pagination = { ...$pagination, page: next };
-      loadEvents();
-    }
-  }
-
-  function handleJumpPage() {
-    const p = parseInt(jumpPage, 10);
-    if (p >= 1 && p <= maxPage) {
-      $pagination = { ...$pagination, page: p };
-      jumpPage = '';
-      loadEvents();
-    }
-  }
-
-  function handleJumpKeydown(e) {
-    if (e.key === 'Enter') handleJumpPage();
-  }
-
-  function handlePageClick(p) {
-    if (p !== $pagination.page) {
-      $pagination = { ...$pagination, page: p };
-      loadEvents();
-    }
+  function handleDomainTagClick(domain) {
+    $selectedDomainTag = domain;
   }
 
   function flashLive() {
@@ -82,17 +81,26 @@
     blinkTimer = setTimeout(() => { liveIndicator = false; }, 600);
   }
 
+  function setupObserver() {
+    if (observer) observer.disconnect();
+    if (!sentinel) return;
+    observer = new IntersectionObserver((entries) => {
+      if (entries[0].isIntersecting && hasMore && !loadingMore && !$loading) {
+        loadNextPage();
+      }
+    }, { rootMargin: '200px' });
+    observer.observe(sentinel);
+  }
+
   onMount(() => {
     mounted = true;
     loadEvents();
     unsubSSE = subscribeEvents(
       (event) => {
-        if ($pagination.page === 1) {
-          liveCount++;
-          flashLive();
-          events.update((list) => [event, ...list].slice(0, $pagination.limit));
-          pagination.update((p) => ({ ...p, total: p.total + 1 }));
-        }
+        liveCount++;
+        flashLive();
+        events.update((list) => [event, ...list]);
+        pagination.update((p) => ({ ...p, total: p.total + 1 }));
       },
       (status) => { $sseStatus = status; }
     );
@@ -101,6 +109,7 @@
   onDestroy(() => {
     if (unsubSSE) unsubSSE();
     if (blinkTimer) clearTimeout(blinkTimer);
+    if (observer) observer.disconnect();
   });
 
   // Only reload on filter changes after mount (skip initial reactive trigger)
@@ -109,27 +118,13 @@
     const filterStr = JSON.stringify($filters);
     if (mounted && filterStr !== prevFilterStr) {
       prevFilterStr = filterStr;
-      $pagination.page = 1;
-      loadEvents();
+      hasMore = true;
+      loadEvents(false);
     }
   }
 
-  $: maxPage = Math.ceil($pagination.total / $pagination.limit) || 1;
-
-  // Compute visible page numbers (smart pagination)
-  $: {
-    const cur = $pagination.page;
-    const pages = [];
-    pages.push(1);
-    if (cur > 4) pages.push('...');
-    for (let i = Math.max(2, cur - 2); i <= Math.min(maxPage - 1, cur + 2); i++) {
-      pages.push(i);
-    }
-    if (cur < maxPage - 3) pages.push('...');
-    if (maxPage > 1) pages.push(maxPage);
-    visiblePages = pages;
-  }
-  let visiblePages = [1];
+  // Wire up IntersectionObserver when sentinel DOM element is bound
+  $: if (sentinel) setupObserver();
 </script>
 
 <section class="timeline" aria-label="Event Timeline">
@@ -170,7 +165,7 @@
       </div>
       <h3>Failed to load events</h3>
       <p class="state-detail">{$error}</p>
-      <button class="btn btn-primary" on:click={loadEvents}>Try again</button>
+      <button class="btn btn-primary" on:click={() => loadEvents(false)}>Try again</button>
     </div>
   {:else if $events.length === 0}
     <div class="state-card">
@@ -186,52 +181,39 @@
     <ul class="event-list">
       {#each $events as event, i (event.id)}
         <li class="event-item" class:is-new={i === 0 && liveIndicator} style="animation-delay: {Math.min(i * 30, 300)}ms;">
-          <EventNode {event} on:click={() => handleEventClick(event)} on:tagclick={(e) => handleEntityTagClick(e.detail)} />
+          <EventNode
+            {event}
+            on:click={() => handleEventClick(event)}
+            on:tagclick={(e) => handleEntityTagClick(e.detail)}
+            on:domainclick={(e) => handleDomainTagClick(e.detail)}
+          />
         </li>
       {/each}
     </ul>
 
-    <!-- Enhanced pagination -->
-    <nav class="pagination" aria-label="Pagination">
-      <button class="page-btn" on:click={() => handlePage(-1)} disabled={$pagination.page <= 1} aria-label="Previous page">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M10 3L5 8l5 5" /></svg>
-      </button>
-
-      <div class="page-numbers">
-        {#each visiblePages as p}
-          {#if p === '...'}
-            <span class="page-ellipsis">…</span>
-          {:else}
-            <button class="page-num" class:active={p === $pagination.page} on:click={() => handlePageClick(p)}>{p}</button>
-          {/if}
-        {/each}
+    {#if loadingMore}
+      <div class="load-more-indicator">
+        <div class="spinner" />
+        <span>Loading more…</span>
       </div>
+    {/if}
 
-      <button class="page-btn" on:click={() => handlePage(1)} disabled={$pagination.page >= maxPage} aria-label="Next page">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 3l5 5-5 5" /></svg>
-      </button>
-
-      <div class="page-jump">
-        <input
-          type="number"
-          class="jump-input"
-          bind:value={jumpPage}
-          on:keydown={handleJumpKeydown}
-          placeholder="Go to"
-          min="1"
-          max={maxPage}
-          aria-label="Jump to page"
-        />
-        <button class="jump-btn" on:click={handleJumpPage} disabled={!jumpPage} aria-label="Go">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8h10M10 5l3 3-3 3" /></svg>
-        </button>
+    {#if hasMore}
+      <div class="scroll-sentinel" bind:this={sentinel} />
+    {:else if $events.length > 0}
+      <div class="end-indicator">
+        <span>All {$pagination.total.toLocaleString()} events loaded</span>
       </div>
-    </nav>
+    {/if}
   {/if}
 </section>
 
 {#if $selectedEntityTag}
   <EntityHistory entityId={$selectedEntityTag} on:close={() => $selectedEntityTag = null} on:eventclick={(e) => handleEventClick(e.detail)} />
+{/if}
+
+{#if $selectedDomainTag}
+  <DomainHistory domain={$selectedDomainTag} on:close={() => $selectedDomainTag = null} on:eventclick={(e) => handleEventClick(e.detail)} />
 {/if}
 
 <style>
@@ -276,65 +258,22 @@
     100% { transform: translateX(0); opacity: 1; }
   }
 
-  /* Enhanced pagination */
-  .pagination {
-    display: flex; align-items: center; justify-content: center;
-    gap: var(--sp-2); padding: var(--sp-5) 0 var(--sp-3); flex-wrap: wrap;
+  /* Infinite scroll */
+  .scroll-sentinel { height: 1px; width: 100%; }
+  .load-more-indicator {
+    display: flex; align-items: center; justify-content: center; gap: var(--sp-2);
+    padding: var(--sp-4) 0; color: var(--color-text-muted); font-size: var(--text-sm);
   }
-  .page-btn {
-    width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-    border-radius: var(--radius-md); background: var(--color-surface);
-    border: 1px solid var(--color-border); color: var(--color-text-secondary);
-    transition: all var(--duration-fast);
+  .spinner {
+    width: 18px; height: 18px; border-radius: 50%;
+    border: 2px solid var(--color-border); border-top-color: var(--color-primary);
+    animation: spin 0.6s linear infinite;
   }
-  .page-btn svg { width: 14px; height: 14px; }
-  .page-btn:hover:not(:disabled) {
-    background: var(--color-surface-hover); border-color: var(--color-primary);
-    color: var(--color-primary); transform: translateY(-1px);
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .end-indicator {
+    text-align: center; padding: var(--sp-4) 0; color: var(--color-text-muted);
+    font-size: var(--text-xs); opacity: 0.7;
   }
-  .page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-
-  .page-numbers { display: flex; align-items: center; gap: 2px; }
-  .page-num {
-    min-width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-    border-radius: var(--radius-md); font-size: var(--text-sm); font-weight: 500;
-    color: var(--color-text-secondary); border: 1px solid transparent;
-    transition: all var(--duration-fast); padding: 0 4px;
-  }
-  .page-num:hover { background: var(--color-surface-hover); color: var(--color-text); }
-  .page-num.active {
-    background: var(--color-primary); color: white; font-weight: 700;
-    border-color: var(--color-primary); box-shadow: 0 2px 8px rgba(124,92,252,.3);
-  }
-  .page-ellipsis {
-    width: 28px; text-align: center; color: var(--color-text-muted);
-    font-size: var(--text-sm); user-select: none;
-  }
-
-  .page-jump {
-    display: flex; align-items: center; gap: 4px;
-    margin-left: var(--sp-3); padding-left: var(--sp-3);
-    border-left: 1px solid var(--color-border);
-  }
-  .jump-input {
-    width: 64px; height: 36px; padding: 0 8px;
-    border-radius: var(--radius-md); border: 1px solid var(--color-border);
-    background: var(--color-bg-elevated); color: var(--color-text);
-    font-size: var(--text-sm); text-align: center; outline: none;
-    -moz-appearance: textfield;
-  }
-  .jump-input::-webkit-outer-spin-button,
-  .jump-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-  .jump-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 2px var(--color-primary-soft); }
-  .jump-input::placeholder { color: var(--color-text-muted); font-size: var(--text-xs); }
-  .jump-btn {
-    width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-    border-radius: var(--radius-md); background: var(--color-primary);
-    color: white; transition: all var(--duration-fast);
-  }
-  .jump-btn svg { width: 14px; height: 14px; }
-  .jump-btn:hover:not(:disabled) { background: var(--color-primary-hover); transform: translateY(-1px); }
-  .jump-btn:disabled { opacity: 0.3; cursor: not-allowed; }
 
   /* States */
   .state-card {
@@ -357,14 +296,9 @@
   @media (max-width: 768px) {
     .timeline { padding: var(--sp-4) var(--sp-3); gap: var(--sp-3); }
     .timeline-header h2 { font-size: var(--text-lg); }
-    .page-jump { margin-left: var(--sp-2); padding-left: var(--sp-2); }
-    .jump-input { width: 52px; height: 32px; font-size: var(--text-xs); }
-    .page-btn, .page-num, .jump-btn { width: 32px; height: 32px; min-width: 32px; }
-    .page-num { font-size: var(--text-xs); }
   }
   @media (max-width: 480px) {
     .timeline { padding: var(--sp-3) var(--sp-2); }
     .event-list { gap: var(--sp-1); }
-    .page-jump { display: none; }
   }
 </style>

@@ -274,7 +274,7 @@ class Storage:
 
     # ─── FTS search ────────────────────────────────────────
 
-    async def search_fts(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
+    async def search_fts(self, query: str, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         assert self._db is not None
         # Escape double-quotes for FTS safety
         safe_query = query.replace('"', '""')
@@ -282,10 +282,21 @@ class Storage:
             """SELECT e.* FROM events e
                JOIN events_fts fts ON fts.event_id = e.id
                WHERE events_fts MATCH ?
-               ORDER BY e.timestamp DESC LIMIT ?""",
-            (f'"{safe_query}"', limit),
+               ORDER BY e.timestamp DESC LIMIT ? OFFSET ?""",
+            (f'"{safe_query}"', limit, offset),
         )
         return [dict(r) for r in rows]
+
+    async def search_fts_count(self, query: str) -> int:
+        assert self._db is not None
+        safe_query = query.replace('"', '""')
+        row = await self._db.execute_fetchone(
+            """SELECT COUNT(*) FROM events e
+               JOIN events_fts fts ON fts.event_id = e.id
+               WHERE events_fts MATCH ?""",
+            (f'"{safe_query}"',),
+        )
+        return row[0] if row else 0
 
     # ─── Bookmark ──────────────────────────────────────────
 

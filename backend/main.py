@@ -96,6 +96,19 @@ def _epoch_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _parse_timestamp(value: str | None) -> int | None:
+    """Parse a timestamp string to epoch-ms. Accepts epoch-ms digits or ISO 8601."""
+    if not value:
+        return None
+    if value.isdigit():
+        return int(value)
+    try:
+        dt = datetime.fromisoformat(value)
+        return int(dt.timestamp() * 1000)
+    except (ValueError, OverflowError):
+        return None
+
+
 def _to_response(row: dict[str, Any]) -> EventResponse:
     ts = row.get("timestamp", 0)
     iso = (
@@ -444,8 +457,11 @@ async def api_get_events(
     # Parse from/to from raw query params (reserved word in Python)
     from_str = request.query_params.get("from")
     to_str = request.query_params.get("to")
-    from_ts = int(from_str) if from_str and from_str.isdigit() else None
-    to_ts = int(to_str) if to_str and to_str.isdigit() else None
+    from_ts = _parse_timestamp(from_str)
+    to_ts = _parse_timestamp(to_str)
+    # Default "to" to now when only "from" is provided
+    if from_ts is not None and to_ts is None:
+        to_ts = _epoch_ms()
 
     if q:
         rows = await storage.search_fts(q, limit=limit)
@@ -552,10 +568,12 @@ async def api_get_event(event_id: str) -> dict[str, Any]:
 @app.get("/api/search", response_model=PaginatedEvents)
 async def api_search(
     q: str = "", limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ) -> PaginatedEvents:
-    rows = await storage.search_fts(q, limit=limit)
+    rows = await storage.search_fts(q, limit=limit, offset=offset)
+    total = await storage.search_fts_count(q)
     return PaginatedEvents(
-        total=len(rows), page=1, limit=limit,
+        total=total, page=1, limit=limit,
         items=[_to_response(r) for r in rows],
     )
 
@@ -608,6 +626,67 @@ async def api_bookmark(
 async def api_stats() -> dict[str, Any]:
     """Comprehensive activity statistics for the stats dashboard."""
     return await storage.get_activity_stats()
+
+
+@app.get("/api/system")
+async def api_system_health() -> dict[str, Any]:
+    """System health: unavailable entities, device breakdown, offline periods."""
+    entities = entity_map.all_entities() if entity_map else []
+
+    unavailable = []
+    device_types: dict[str, int] = {}
+    total_devices = 0
+    for e in entities:
+        eid = e.entity_id
+        integration = e.integration or ""
+        domain = e.domain or (eid.split(".")[0] if "." in eid else "")
+        state = e.attributes.get("state", "")
+        if integration:
+            device_types[integration] = device_types.get(integration, 0) + 1
+        total_devices += 1
+        if state in ("unavailable", "unknown"):
+            unavailable.append({
+                "entity_id": eid,
+                "friendly_name": e.friendly_name or eid,
+                "state": state,
+                "domain": domain,
+                "integration": integration,
+                "area": e.area or "",
+            })
+
+    # Compute offline periods from HA start/stop events
+    offline_periods = []
+    try:
+        stops = await storage.get_events(
+            page=1, limit=50, event_type="homeassistant_stop",
+        )
+        starts = await storage.get_events(
+            page=1, limit=50, event_type="homeassistant_start",
+        )
+        stop_rows = stops[0] if stops else []
+        start_rows = starts[0] if starts else []
+        stop_times = sorted([r["timestamp"] for r in stop_rows], reverse=True)
+        start_times = sorted([r["timestamp"] for r in start_rows], reverse=True)
+        for st in stop_times:
+            # Find the next start after this stop
+            resumed = next((s for s in start_times if s > st), None)
+            offline_periods.append({
+                "stopped_at": st,
+                "resumed_at": resumed,
+                "duration_ms": (resumed - st) if resumed else None,
+            })
+    except Exception:
+        pass
+
+    ws_connected = ha_client.connected if ha_client else False
+    return {
+        "ws_connected": ws_connected,
+        "total_entities": total_devices,
+        "unavailable": unavailable,
+        "unavailable_count": len(unavailable),
+        "device_types": device_types,
+        "offline_periods": offline_periods[:20],
+    }
 
 
 @app.get("/health", response_model=HealthResponse)

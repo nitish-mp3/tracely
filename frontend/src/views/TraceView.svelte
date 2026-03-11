@@ -10,7 +10,7 @@
     getBreadcrumbs, getCriticalPath, getTreeStats,
     formatDuration, formatDelta,
   } from '../lib/treeLayout.js';
-  import { selectedEventId, treeData, selectedEntityTag } from '../stores/events.js';
+  import { selectedEventId, treeData, selectedEntityTag, viewHistory } from '../stores/events.js';
   import { currentView, addToast } from '../stores/config.js';
 
   // ── State ──
@@ -97,7 +97,9 @@
   }
 
   function handleBack() {
-    $currentView = 'timeline';
+    const prev = $viewHistory.length > 0 ? $viewHistory.pop() : 'timeline';
+    $viewHistory = $viewHistory;
+    $currentView = prev;
     $selectedEventId = null;
   }
 

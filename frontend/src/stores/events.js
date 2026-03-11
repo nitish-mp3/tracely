@@ -43,6 +43,12 @@ export const sseStatus = writable('disconnected');
 // Entity tag selection (for entity history drill-down)
 export const selectedEntityTag = writable(null);
 
+// Domain tag selection (for domain history drill-down)
+export const selectedDomainTag = writable(null);
+
+// View history stack — so we can go back to filtered view after trace
+export const viewHistory = writable([]);
+
 // Derived: has active filters?
 export const hasActiveFilters = derived(filters, ($f) =>
   Boolean($f.entity || $f.domain || $f.area || $f.user_id || $f.event_type || $f.q || $f.from || $f.to || $f.bookmarksOnly || $f.inferredOnly)

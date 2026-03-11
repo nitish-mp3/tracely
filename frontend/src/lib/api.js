@@ -49,8 +49,8 @@ export async function bookmarkEvent(id, note = '') {
 
 // ─── Search ────────────────────────────────────────────
 
-export async function searchEvents(q, limit = 50) {
-  const qs = new URLSearchParams({ q, limit });
+export async function searchEvents(q, limit = 50, offset = 0) {
+  const qs = new URLSearchParams({ q, limit, offset });
   return request(`/api/search?${qs}`);
 }
 
@@ -81,6 +81,12 @@ export async function getHealth() {
 
 export async function getStats() {
   return request('/api/stats');
+}
+
+// ─── System Health ──────────────────────────────────────
+
+export async function getSystemHealth() {
+  return request('/api/system');
 }
 
 // ─── SSE stream (global singleton with robust reconnection) ─

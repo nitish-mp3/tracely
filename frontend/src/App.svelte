@@ -4,9 +4,10 @@
   import Filters from './views/Filters.svelte';
   import Search from './views/Search.svelte';
   import Stats from './views/Stats.svelte';
+  import SystemHealth from './views/SystemHealth.svelte';
   import Toast from './components/Toast.svelte';
   import { currentView, filtersOpen, healthStatus, addToast } from './stores/config.js';
-  import { filters, hasActiveFilters } from './stores/events.js';
+  import { filters, hasActiveFilters, viewHistory } from './stores/events.js';
   import { getHealth } from './lib/api.js';
   import { onMount } from 'svelte';
 
@@ -14,18 +15,31 @@
   let healthInterval;
 
   function handleNav(view) {
+    // Push current view to history for back-navigation
+    if ($currentView !== view) {
+      $viewHistory = [...$viewHistory, $currentView];
+    }
     $currentView = view;
   }
 
   function handleSearchSubmit() {
     if (searchQuery.trim()) {
       $filters = { ...$filters, q: searchQuery.trim() };
-      $currentView = 'search';
+      handleNav('search');
     }
   }
 
   function handleSearchKeydown(e) {
     if (e.key === 'Enter') handleSearchSubmit();
+    if (e.key === 'Escape') {
+      searchQuery = '';
+      e.target.blur();
+    }
+  }
+
+  function handleSearchClear() {
+    searchQuery = '';
+    $filters = { ...$filters, q: '' };
   }
 
   function toggleFilters() {
@@ -43,6 +57,11 @@
     healthInterval = setInterval(checkHealth, 30000);
     return () => clearInterval(healthInterval);
   });
+
+  // Sync header search with filter q
+  $: if ($currentView === 'search' && $filters.q && !searchQuery) {
+    searchQuery = $filters.q;
+  }
 
   $: statusLabel = $healthStatus?.ws_connected ? 'Connected' : 'Disconnected';
   $: eventsCount = $healthStatus?.events_count ?? null;
@@ -90,6 +109,16 @@
           </svg>
           Stats
         </button>
+        <button
+          class="nav-pill"
+          class:active={$currentView === 'health'}
+          on:click={() => handleNav('health')}
+        >
+          <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <path d="M8 1v14M1 8h14" /><circle cx="8" cy="8" r="6" />
+          </svg>
+          Health
+        </button>
       </nav>
     </div>
 
@@ -103,9 +132,14 @@
           class="search-input"
           bind:value={searchQuery}
           on:keydown={handleSearchKeydown}
-          placeholder="Search events..."
+          placeholder="Search events... (Enter)"
           aria-label="Quick search"
         />
+        {#if searchQuery}
+          <button class="search-clear" on:click={handleSearchClear} aria-label="Clear search">
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3l6 6M9 3l-6 6" /></svg>
+          </button>
+        {/if}
       </div>
 
       <button
@@ -143,6 +177,8 @@
       <Search />
     {:else if $currentView === 'stats'}
       <Stats />
+    {:else if $currentView === 'health'}
+      <SystemHealth />
     {/if}
   </main>
 
@@ -284,6 +320,23 @@
   }
   .search-input::placeholder {
     color: var(--color-text-muted);
+  }
+  .search-clear {
+    position: absolute;
+    right: 8px;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    color: var(--color-text-muted);
+    transition: all var(--duration-fast);
+  }
+  .search-clear svg { width: 10px; height: 10px; }
+  .search-clear:hover {
+    color: var(--color-text);
+    background: var(--color-surface-hover);
   }
 
   /* Filter button */

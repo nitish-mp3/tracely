@@ -86,6 +86,24 @@
     const ent = entities.find(e => e.entity_id === entityId);
     return ent?.friendly_name || entityId;
   }
+
+  function toLocalISOString(date) {
+    const offset = date.getTimezoneOffset();
+    const local = new Date(date.getTime() - offset * 60000);
+    return local.toISOString().slice(0, 16);
+  }
+
+  function setTimePreset(hours) {
+    const now = new Date();
+    const from = new Date(now.getTime() - hours * 3600000);
+    $filters.from = toLocalISOString(from);
+    $filters.to = toLocalISOString(now);
+  }
+
+  // Auto-default "to" to now when only "from" is set (on apply)
+  $: if ($filters.from && !$filters.to) {
+    // Keep "to" empty in UI but backend treats missing "to" as now
+  }
 </script>
 
 {#if $filtersOpen}
@@ -284,6 +302,13 @@
       <div class="section">
         <span class="section-title">Time</span>
         <div class="filter-group">
+          <div class="time-presets">
+            <button class="preset-btn" on:click={() => setTimePreset(1)}>Last 1h</button>
+            <button class="preset-btn" on:click={() => setTimePreset(6)}>Last 6h</button>
+            <button class="preset-btn" on:click={() => setTimePreset(24)}>Last 24h</button>
+            <button class="preset-btn" on:click={() => setTimePreset(168)}>Last 7d</button>
+            <button class="preset-btn" on:click={() => setTimePreset(720)}>Last 30d</button>
+          </div>
           <div class="date-row">
             <div class="date-input-wrap">
               <span class="date-label">From</span>
@@ -292,9 +317,12 @@
             <svg class="date-arrow" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8h10M10 5l3 3-3 3" /></svg>
             <div class="date-input-wrap">
               <span class="date-label">To</span>
-              <input class="input-field" type="datetime-local" bind:value={$filters.to} aria-label="To date" />
+              <input class="input-field" type="datetime-local" bind:value={$filters.to} placeholder="Now" aria-label="To date" />
             </div>
           </div>
+          {#if $filters.from && !$filters.to}
+            <span class="time-hint">"To" defaults to now</span>
+          {/if}
         </div>
       </div>
 
@@ -497,5 +525,23 @@
     .filter-drawer { width: 100%; max-width: 100%; }
     .date-row { flex-direction: column; }
     .date-arrow { display: none; }
+  }
+
+  .time-presets {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--sp-2);
+  }
+  .preset-btn {
+    padding: 4px 12px; border-radius: var(--radius-full);
+    font-size: var(--text-2xs); font-weight: 600;
+    background: var(--color-surface-hover); color: var(--color-text-secondary);
+    border: 1px solid var(--color-border); transition: all var(--duration-fast);
+  }
+  .preset-btn:hover {
+    background: var(--color-primary-soft); color: var(--color-primary);
+    border-color: var(--color-primary);
+  }
+  .time-hint {
+    font-size: var(--text-2xs); color: var(--color-text-muted);
+    font-style: italic; margin-top: 2px;
   }
 </style>

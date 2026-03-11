@@ -1,7 +1,9 @@
 <script>
+  import { onMount } from 'svelte';
   import EventNode from '../components/EventNode.svelte';
+  import EntityHistory from '../components/EntityHistory.svelte';
   import { searchEvents } from '../lib/api.js';
-  import { selectedEventId } from '../stores/events.js';
+  import { selectedEventId, filters, selectedEntityTag, selectedDomainTag } from '../stores/events.js';
   import { currentView } from '../stores/config.js';
 
   let query = '';
@@ -9,21 +11,41 @@
   let total = 0;
   let searching = false;
   let searched = false;
+  let loadingMore = false;
+  let offset = 0;
+  const LIMIT = 50;
 
-  async function handleSearch() {
+  async function handleSearch(append = false) {
     if (!query.trim()) return;
-    searching = true;
-    searched = true;
-    try {
-      const data = await searchEvents(query.trim());
-      results = data.items || [];
-      total = data.total || results.length;
-    } catch {
+    if (!append) {
+      searching = true;
+      searched = true;
+      offset = 0;
       results = [];
-      total = 0;
+    } else {
+      loadingMore = true;
+    }
+    try {
+      const data = await searchEvents(query.trim(), LIMIT, offset);
+      const items = data.items || [];
+      if (append) {
+        results = [...results, ...items];
+      } else {
+        results = items;
+      }
+      total = data.total || results.length;
+      offset = results.length;
+    } catch {
+      if (!append) { results = []; total = 0; }
     } finally {
       searching = false;
+      loadingMore = false;
     }
+  }
+
+  function handleLoadMore() {
+    if (loadingMore || results.length >= total) return;
+    handleSearch(true);
   }
 
   function handleKeydown(e) {
@@ -35,12 +57,31 @@
     $currentView = 'trace';
   }
 
+  function handleEntityTagClick(entityId) {
+    $selectedEntityTag = entityId;
+  }
+
+  function handleDomainTagClick(domain) {
+    $selectedDomainTag = domain;
+  }
+
   function handleClear() {
     query = '';
     results = [];
     total = 0;
     searched = false;
+    $filters = { ...$filters, q: '' };
   }
+
+  // Sync with header search bar on mount
+  onMount(() => {
+    if ($filters.q && !query) {
+      query = $filters.q;
+      handleSearch();
+    }
+  });
+
+  $: hasMore = results.length < total;
 </script>
 
 <section class="search-view" aria-label="Search">
@@ -95,10 +136,29 @@
     <ul class="result-list">
       {#each results as event, i (event.id)}
         <li style="animation-delay: {Math.min(i * 30, 300)}ms;">
-          <EventNode {event} on:click={() => handleEventClick(event)} />
+          <EventNode
+            {event}
+            on:click={() => handleEventClick(event)}
+            on:tagclick={(e) => handleEntityTagClick(e.detail)}
+            on:domainclick={(e) => handleDomainTagClick(e.detail)}
+          />
         </li>
       {/each}
     </ul>
+
+    {#if hasMore}
+      <div class="load-more-wrap">
+        <button class="btn btn-secondary load-more-btn" on:click={handleLoadMore} disabled={loadingMore}>
+          {#if loadingMore}
+            <span class="spinner" /> Loading…
+          {:else}
+            Load more ({total - results.length} remaining)
+          {/if}
+        </button>
+      </div>
+    {:else if results.length > 0}
+      <div class="end-indicator">All {total} results shown</div>
+    {/if}
   {:else}
     <div class="state-card">
       <div class="state-icon initial-icon">
@@ -112,6 +172,10 @@
     </div>
   {/if}
 </section>
+
+{#if $selectedEntityTag}
+  <EntityHistory entityId={$selectedEntityTag} on:close={() => $selectedEntityTag = null} on:eventclick={(e) => handleEventClick(e.detail)} />
+{/if}
 
 <style>
   .search-view {
@@ -279,5 +343,17 @@
   .skeleton-list .skeleton {
     border-radius: var(--radius-md);
     animation-fill-mode: both;
+  }
+
+  .load-more-wrap {
+    display: flex; justify-content: center; padding: var(--sp-3) 0;
+  }
+  .load-more-btn {
+    display: inline-flex; align-items: center; gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-5); font-size: var(--text-sm);
+  }
+  .end-indicator {
+    text-align: center; padding: var(--sp-3) 0; color: var(--color-text-muted);
+    font-size: var(--text-xs); opacity: 0.7;
   }
 </style>

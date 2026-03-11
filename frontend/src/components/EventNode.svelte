@@ -28,7 +28,17 @@
     if (diff < 60) return `${diff}s ago`;
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
     if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    if (diff < 172800) return 'yesterday';
+    return `${Math.floor(diff / 86400)}d ago`;
+  }
+
+  function exactTime(isoString) {
+    if (!isoString) return '';
+    const date = new Date(isoString);
+    return date.toLocaleString(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
   }
 
   function getStateChange() {
@@ -50,53 +60,38 @@
   }
   function isOffState(s) {
     const v = String(s).toLowerCase();
-    return v === 'off' || v === 'false' || v === 'not_home' || v === 'idle' || v === 'closed' || v === 'locked' || v === 'unavailable';
+    return v === 'off' || v === 'false' || v === 'not_home' || v === 'idle' || v === 'closed' || v === 'locked';
+  }
+  function isUnavailable(s) {
+    const v = String(s).toLowerCase();
+    return v === 'unavailable' || v === 'unknown';
   }
 
-  /**
-   * Parse the event name into structured parts for better readability.
-   * E.g. "browser_mod_9021973d_0a641e5f Browser visibility changed from hidden to visible"
-   * → { friendlyName: "Browser visibility", action: "changed from hidden to visible" }
-   */
   function parseEventName(name, entityId) {
     if (!name) return { label: event.event_type, action: '' };
-
-    // Try to extract the action verb (changed, turned, triggered, started, etc.)
     const actionVerbs = /\b(changed|turned|switched|toggled|triggered|started|stopped|finished|called|set|updated|fired|loaded)\b/i;
     const match = name.match(actionVerbs);
-
     if (match) {
       const idx = match.index;
       let label = name.substring(0, idx).trim();
       let action = name.substring(idx).trim();
-
-      // If the label is still the raw entity_id, try to make it friendly
       if (entityId && label.toLowerCase() === entityId.replace(/\./g, ' ').replace(/_/g, ' ').toLowerCase()) {
-        // Use just the part after the domain
         const parts = entityId.split('.');
         if (parts.length > 1) {
           label = parts[1].replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
         }
       }
-
-      // Clean up really long entity prefixes from the label
       if (label.length > 40) {
         const words = label.split(' ');
-        if (words.length > 4) {
-          label = words.slice(-3).join(' ');
-        }
+        if (words.length > 4) label = words.slice(-3).join(' ');
       }
-
       return { label, action };
     }
-
-    // No action verb found — just split at a reasonable point
     if (name.length > 50) {
       const words = name.split(' ');
       const mid = Math.ceil(words.length / 2);
       return { label: words.slice(0, mid).join(' '), action: words.slice(mid).join(' ') };
     }
-
     return { label: name, action: '' };
   }
 
@@ -107,19 +102,34 @@
     return parts[1].replace(/_/g, ' ');
   }
 
+  function getUserLabel(userId) {
+    if (!userId) return null;
+    // Shorten long UUID-style user IDs
+    if (userId.length > 16) return userId.substring(0, 8) + '…';
+    return userId;
+  }
+
   function handleTagClick(e) {
     e.stopPropagation();
     if (event.entity_id) dispatch('tagclick', event.entity_id);
   }
 
+  function handleDomainClick(e) {
+    e.stopPropagation();
+    if (event.domain) dispatch('domainclick', event.domain);
+  }
+
   $: stateChange = getStateChange();
   $: parsed = parseEventName(event.name, event.entity_id);
+  $: newStateUnavailable = stateChange && isUnavailable(stateChange.to);
+  $: userLabel = getUserLabel(event.user_id);
 </script>
 
 <button
   class="event-node"
   class:compact
   class:bookmarked={event.important}
+  class:unavailable-event={newStateUnavailable}
   style="--accent: {categoryColor(event.domain)}"
   on:click
   aria-label="View trace for {event.name || event.event_type}"
@@ -140,9 +150,9 @@
 
     {#if stateChange}
       <div class="state-change-row">
-        <span class="sc-val" class:sc-on={isOnState(stateChange.from)} class:sc-off={isOffState(stateChange.from)}>{stateChange.from}</span>
+        <span class="sc-val" class:sc-on={isOnState(stateChange.from)} class:sc-off={isOffState(stateChange.from)} class:sc-unavail={isUnavailable(stateChange.from)}>{stateChange.from}</span>
         <svg class="sc-arrow" viewBox="0 0 16 8" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 4h14M12 1l3 3-3 3" /></svg>
-        <span class="sc-val sc-target" class:sc-on={isOnState(stateChange.to)} class:sc-off={isOffState(stateChange.to)}>{stateChange.to}</span>
+        <span class="sc-val sc-target" class:sc-on={isOnState(stateChange.to)} class:sc-off={isOffState(stateChange.to)} class:sc-unavail={isUnavailable(stateChange.to)}>{stateChange.to}</span>
       </div>
     {/if}
 
@@ -154,7 +164,9 @@
         </button>
       {/if}
       {#if event.domain}
-        <span class="tag domain-tag">{event.domain}</span>
+        <button class="tag domain-tag" on:click={handleDomainClick} title="View all {event.domain} events">
+          {event.domain}
+        </button>
       {/if}
       {#if event.area}
         <span class="tag area-tag">
@@ -162,12 +174,26 @@
           {event.area}
         </span>
       {/if}
+      {#if userLabel}
+        <span class="tag user-tag" title="Triggered by user: {event.user_id}">
+          <svg class="tag-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="6" cy="4" r="2.5" /><path d="M2 11c0-2.2 1.8-4 4-4s4 1.8 4 4" /></svg>
+          {userLabel}
+        </span>
+      {/if}
+      {#if event.integration}
+        <span class="tag integration-tag" title="Integration: {event.integration}">
+          {event.integration}
+        </span>
+      {/if}
     </div>
   </div>
 
   <div class="meta">
     <ConfidenceBadge confidence={event.confidence} />
-    <time class="time" datetime={event.timestamp}>{relativeTime(event.timestamp)}</time>
+    <time class="time" datetime={event.timestamp} title={exactTime(event.timestamp)}>
+      {relativeTime(event.timestamp)}
+    </time>
+    <span class="time-exact">{exactTime(event.timestamp)}</span>
   </div>
 
   {#if event.important}
@@ -260,11 +286,44 @@
     box-shadow: 0 0 6px rgba(124,92,252,.2); transform: translateY(-1px);
   }
   .tag-entity-name { text-transform: capitalize; }
-  .domain-tag { color: var(--color-info); background: var(--color-info-soft); border-color: rgba(56,189,248,.12); }
+  .domain-tag {
+    color: var(--color-info); background: var(--color-info-soft);
+    border-color: rgba(56,189,248,.12); cursor: pointer;
+  }
+  .domain-tag:hover {
+    background: rgba(56,189,248,.18); border-color: var(--color-info);
+    box-shadow: 0 0 6px rgba(56,189,248,.2); transform: translateY(-1px);
+  }
   .area-tag { color: var(--color-warning); background: var(--color-warning-soft); border-color: rgba(251,191,36,.12); }
+  .user-tag {
+    color: var(--color-success); background: var(--color-success-soft);
+    border-color: rgba(52,211,153,.15);
+  }
+  .integration-tag {
+    color: var(--color-text-secondary); background: var(--color-surface-hover);
+    border-color: var(--color-border);
+  }
 
-  .meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; margin-top: 2px; }
+  /* Unavailable state styling */
+  .sc-val.sc-unavail {
+    color: var(--color-error, #ef4444); background: rgba(239,68,68,.12);
+    font-weight: 700; animation: pulse-unavail 2s ease-in-out infinite;
+  }
+  .unavailable-event {
+    border-color: rgba(239,68,68,.25); background: rgba(239,68,68,.03);
+  }
+  .unavailable-event .indicator { background: var(--color-error, #ef4444); }
+  @keyframes pulse-unavail {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+  }
+
+  .meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; margin-top: 2px; }
   .time { font-size: var(--text-2xs); color: var(--color-text-muted); white-space: nowrap; font-family: var(--font-mono); }
+  .time-exact {
+    font-size: 9px; color: var(--color-text-muted); opacity: 0.6;
+    white-space: nowrap; font-family: var(--font-mono);
+  }
 
   .bookmark-icon { position: absolute; top: 6px; right: 6px; color: var(--color-warning); width: 12px; height: 12px; }
   .bookmark-icon svg { width: 12px; height: 12px; }
