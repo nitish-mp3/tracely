@@ -411,7 +411,7 @@ def _knx_epoch_ms(time_fired: str | None) -> int:
 
 
 def _knx_to_response(row: dict[str, Any]) -> KnxTelegramResponse:
-    logger.info("[_knx_to_response] ROW :\n", row)
+    logger.info("[_knx_to_response] ROW :", row)
     ts = row.get("timestamp", 0)
     iso = (
         datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
@@ -466,7 +466,7 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
                                data.payload (hex str), data.dpt (dict), data.value,
                                data.destination_text (GA friendly name), data.unit
     """
-    logger.info("[_PROCESS_KNX_EVENT] raw event : \n", raw_event)
+    logger.info("[_PROCESS_KNX_EVENT] raw event :", raw_event)
     event_type = raw_event.get("event_type", "knx_event")
     data = raw_event.get("data", {})
     context = raw_event.get("context", {})
