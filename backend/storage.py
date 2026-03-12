@@ -823,3 +823,47 @@ class Storage:
             (entity_id, group_address),
         )
         await self._db.commit()
+
+    async def update_knx_telegram_event_link(
+        self, telegram_id: str, event_id: str,
+    ) -> None:
+        """Set linked_event_id on a KNX telegram row."""
+        assert self._db is not None
+        await self._db.execute(
+            "UPDATE knx_telegrams SET linked_event_id = ? WHERE id = ? AND linked_event_id IS NULL",
+            (event_id, telegram_id),
+        )
+        await self._db.commit()
+
+    async def find_recent_state_change_for_entity(
+        self,
+        entity_id: str,
+        around_ts: int,
+        window_ms: int = 2000,
+    ) -> dict[str, Any] | None:
+        """Return the closest state_changed event for *entity_id* within ±window_ms of *around_ts*."""
+        assert self._db is not None
+        rows = await self._db.execute_fetchall(
+            """SELECT * FROM events
+               WHERE entity_id = ? AND event_type = 'state_changed'
+                 AND timestamp BETWEEN ? AND ?
+               ORDER BY ABS(timestamp - ?) LIMIT 1""",
+            (entity_id, around_ts - window_ms, around_ts + window_ms, around_ts),
+        )
+        return dict(rows[0]) if rows else None
+
+    async def find_recent_knx_telegram_for_ga(
+        self,
+        group_address: str,
+        around_ts: int,
+        window_ms: int = 2000,
+    ) -> dict[str, Any] | None:
+        """Return the closest KNX telegram for *group_address* within ±window_ms of *around_ts*."""
+        assert self._db is not None
+        rows = await self._db.execute_fetchall(
+            """SELECT * FROM knx_telegrams
+               WHERE group_address = ? AND timestamp BETWEEN ? AND ?
+               ORDER BY ABS(timestamp - ?) LIMIT 1""",
+            (group_address, around_ts - window_ms, around_ts + window_ms, around_ts),
+        )
+        return dict(rows[0]) if rows else None

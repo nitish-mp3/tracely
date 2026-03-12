@@ -322,6 +322,35 @@ async def _event_processor() -> None:
                 await tree_builder.link(rec)
                 _fan_out_sse(rec)
 
+                # Reverse-link: if this is a state_changed for a KNX entity,
+                # find the nearest KNX telegram on any of its GAs and record
+                # the event_id on that telegram row so the KNX monitor can
+                # show "→ caused state change" with a direct jump to the trace.
+                if rec.event_type == "state_changed" and rec.entity_id:
+                    info = entity_map.resolve(rec.entity_id)
+                    is_knx = (
+                        (info and info.integration == "knx")
+                        or "knx" in (rec.entity_id or "").lower()
+                    )
+                    if is_knx:
+                        # Extract GA candidates from entity attributes
+                        ga_candidates: list[str] = []
+                        if info:
+                            for attr_key, attr_val in info.attributes.items():
+                                if isinstance(attr_val, str) and "/" in attr_val and attr_key != "source":
+                                    ga_candidates.append(attr_val)
+                                elif isinstance(attr_val, list):
+                                    for v in attr_val:
+                                        if isinstance(v, str) and "/" in v:
+                                            ga_candidates.append(v)
+                        for ga_candidate in ga_candidates[:5]:  # safety cap
+                            tg = await storage.find_recent_knx_telegram_for_ga(
+                                ga_candidate, rec.timestamp, window_ms=2000,
+                            )
+                            if tg and not tg.get("linked_event_id"):
+                                await storage.update_knx_telegram_event_link(tg["id"], rec.id)
+                                break
+
         except asyncio.CancelledError:
             break
         except Exception:
@@ -517,7 +546,15 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
     destination_text: str | None = data.get("destination_text") or None
 
     # ── Entity linkage (resolved early so it appears in the received log) ───
+    # Strategy 1: scan entity attributes for the group address
     linked_entity: str | None = entity_map.find_entity_by_attribute("knx", ga)
+    entity_match_method = "ga_attribute"
+    # Strategy 2: match by KNX physical/individual source address ("source" attribute)
+    # KNX entities expose their bus address as attributes["source"] (e.g. "1.1.17")
+    if not linked_entity and source:
+        linked_entity = entity_map.find_knx_entity_by_source(source)
+        if linked_entity:
+            entity_match_method = "source_address"
     linked_entity_name: str = entity_map.get_friendly_name(linked_entity) if linked_entity else ""
 
     logger.info(
@@ -529,6 +566,7 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
         source=event_type,
         entity=linked_entity or "",
         entity_name=linked_entity_name,
+        entity_match=entity_match_method if linked_entity else "none",
         value=decoded_str or (f"0x{raw_hex.upper()}" if raw_hex else ""),
         dpt=dpt_type or "",
     )
@@ -563,12 +601,27 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
     try:
         await storage.insert_knx_telegram(telegram)
         _knx_diag["stored"] += 1
+
+        # ── Cross-link: find the closest state_changed event for this entity ──
+        # KNX writes typically trigger a state_changed within ~500 ms.  We look
+        # in a ±2s window so we tolerate slow HA processing.
+        linked_event_id: str | None = None
+        if linked_entity:
+            sc = await storage.find_recent_state_change_for_entity(
+                linked_entity, timestamp_ms, window_ms=2000,
+            )
+            if sc:
+                linked_event_id = sc["id"]
+                await storage.update_knx_telegram_event_link(telegram_id, linked_event_id)
+
         logger.info(
             "knx.stored",
             ga=ga,
             id=telegram_id,
             entity=linked_entity or "",
             entity_name=linked_entity_name,
+            entity_match=entity_match_method if linked_entity else "none",
+            linked_event=linked_event_id or "",
             value=decoded_str or (f"0x{raw_hex.upper()}" if raw_hex else ""),
             dpt=dpt_type or "",
             direction=direction,
@@ -579,7 +632,8 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
         logger.exception("knx.insert_error", ga=ga)
         return
 
-    # Fan-out to KNX SSE clients
+    # Fan-out to KNX SSE clients — refresh with updated linked_event_id
+    telegram["linked_event_id"] = linked_event_id
     resp = _knx_to_response(telegram)
     sse_data = resp.model_dump_json()
     dead: set[asyncio.Queue[str]] = set()

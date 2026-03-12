@@ -160,3 +160,20 @@ class EntityMap:
                 if isinstance(attr_val, list) and value in attr_val:
                     return info.entity_id
         return None
+
+    def find_knx_entity_by_source(self, source_address: str) -> str | None:
+        """Return entity_id whose KNX physical/individual address matches *source_address*.
+
+        KNX entities expose their physical bus address as the "source" attribute
+        (e.g. "1.1.17").  This is a reliable 1:1 match: one physical device →
+        one entity.  Used as the fallback when the GA-based attribute scan fails.
+        """
+        if not source_address:
+            return None
+        for info in self._entities.values():
+            if info.integration and info.integration != "knx":
+                continue
+            src = info.attributes.get("source")
+            if isinstance(src, str) and src == source_address:
+                return info.entity_id
+        return None
