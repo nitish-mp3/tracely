@@ -281,7 +281,7 @@ async def _event_processor() -> None:
             raw = await _event_queue.get()
             batch: list[EventRecord] = []
             # KNX events are handled separately (not stored in events table)
-            if raw.get("event_type") == "knx_event":
+            if raw.get("event_type") in {"knx_event", "knx.telegram"}:
                 await _process_knx_event(raw)
                 continue
 
@@ -294,7 +294,7 @@ async def _event_processor() -> None:
             while not _event_queue.empty() and len(batch) < 200:
                 try:
                     raw = _event_queue.get_nowait()
-                    if raw.get("event_type") == "knx_event":
+                    if raw.get("event_type") in {"knx_event", "knx.telegram"}:
                         await _process_knx_event(raw)
                         continue
                     rec = _normalize_raw_event(raw)
@@ -423,24 +423,41 @@ def _knx_ga_to_response(row: dict[str, Any]) -> KnxGroupAddressResponse:
 
 
 async def _process_knx_event(raw_event: dict[str, Any]) -> None:
-    """Extract KNX telegram from a raw knx_event and persist it."""
+    """Extract KNX telegram from a raw knx_event OR knx/subscribe_telegrams and persist it.
+
+    Two event paths reach this function:
+    - "knx_event"    — from subscribe_events; fires only for fire_event:true GAs.
+                       Fields: data.destination, data.source, data.data (bytes list),
+                               data.dpt_name, data.value
+    - "knx.telegram" — synthetic wrapper around knx/subscribe_telegrams (ALL telegrams,
+                       same stream as the HA Group Monitor).
+                       Fields: data.destination_address, data.source_address,
+                               data.payload (hex str), data.dpt (dict), data.value,
+                               data.destination_text (GA friendly name), data.unit
+    """
+    event_type = raw_event.get("event_type", "knx_event")
     data = raw_event.get("data", {})
     context = raw_event.get("context", {})
-    time_fired = raw_event.get("time_fired")
+
+    # time_fired is set by knx_event; knx.telegram uses data.timestamp
+    time_fired = raw_event.get("time_fired") or data.get("timestamp")
     timestamp_ms = _knx_epoch_ms(time_fired)
 
     _knx_diag["received"] += 1
-    # Keep last 10 raw data dicts for diagnostics (strip large blobs)
+    _knx_diag.setdefault("received_by_source", {"knx_event": 0, "knx.telegram": 0})
+    _knx_diag["received_by_source"][event_type] = (
+        _knx_diag["received_by_source"].get(event_type, 0) + 1
+    )
     _knx_diag["recent_raw"].append({
+        "source": event_type,
         "data_keys": list(data.keys()),
-        "destination": data.get("destination"),
-        "source": data.get("source"),
+        "destination": data.get("destination") or data.get("destination_address"),
         "direction": data.get("direction"),
         "telegramtype": data.get("telegramtype"),
         "time_fired": time_fired,
     })
 
-    # HA KNX integration fires knx_event with "destination" (not "destination_address")
+    # Group address — knx_event uses "destination", subscribe path uses "destination_address"
     ga = (
         data.get("destination")
         or data.get("destination_address")
@@ -449,33 +466,71 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
     )
     if not ga:
         _knx_diag["dropped_no_ga"] += 1
-        logger.warning("knx.dropped_no_ga", data_keys=list(data.keys()), raw_data=data)
+        logger.warning("knx.dropped_no_ga", data_keys=list(data.keys()), source=event_type)
         return
 
-    logger.info("knx.received", ga=ga, direction=data.get("direction"), type=data.get("telegramtype"))
+    logger.info("knx.received", ga=ga, direction=data.get("direction"),
+                type=data.get("telegramtype"), source=event_type)
 
     telegram_type = data.get("telegramtype") or data.get("telegram_type") or "Unknown"
     direction = data.get("direction", "Incoming")
     source = data.get("source") or data.get("source_address")
 
-    # Raw bytes → hex string
-    raw = data.get("data")
+    # ── Raw bytes → hex string ──────────────────────────────────────────────
+    # knx_event:    data.data  = list of ints, e.g. [0]
+    # knx.telegram: data.payload = hex string, e.g. "0x00"
+    raw_bytes = data.get("data")
     raw_hex: str | None = None
-    if isinstance(raw, (list, bytes)):
-        raw_hex = bytes(raw).hex() if isinstance(raw, list) else raw.hex()
-    elif isinstance(raw, str):
-        raw_hex = raw
+    if isinstance(raw_bytes, (list, bytes)):
+        raw_hex = bytes(raw_bytes).hex() if isinstance(raw_bytes, list) else raw_bytes.hex()
+    elif isinstance(raw_bytes, str):
+        raw_hex = raw_bytes
+    # knx/subscribe_telegrams provides a hex string directly in "payload"
+    if raw_hex is None:
+        payload_str = data.get("payload")
+        if isinstance(payload_str, str) and payload_str:
+            # Strip "0x" prefix so storage is consistent (pure hex, no prefix)
+            raw_hex = payload_str[2:] if payload_str.startswith("0x") else payload_str
 
-    # Decoded value → JSON-safe string
+    # ── DPT type ────────────────────────────────────────────────────────────
+    # knx_event:    data.dpt_name = "DPT-1" or None
+    # knx.telegram: data.dpt = {"main": 1, "sub": 8} or None
+    dpt_type: str | None = data.get("dpt_name")
+    if dpt_type is None:
+        dpt_dict = data.get("dpt")
+        if isinstance(dpt_dict, dict):
+            main = dpt_dict.get("main")
+            sub = dpt_dict.get("sub")
+            if main is not None:
+                dpt_type = f"DPT-{main}.{sub:03d}" if sub is not None else f"DPT-{main}"
+
+    # ── Decoded value → JSON-safe string ────────────────────────────────────
     decoded = data.get("value")
-    decoded_str: str | None = json.dumps(decoded, default=str) if decoded is not None else None
+    unit = data.get("unit")
+    decoded_str: str | None = None
+    if decoded is not None:
+        # If a unit is provided, append it for display (e.g. "23.5 °C")
+        if unit and isinstance(decoded, (int, float, str)):
+            decoded_str = f"{decoded} {unit}"
+        else:
+            decoded_str = json.dumps(decoded, default=str)
 
-    # Try to find entity linked to this GA via entity_map
+    # ── GA friendly name (only available from knx/subscribe_telegrams) ──────
+    destination_text: str | None = data.get("destination_text") or None
+
+    # ── Entity linkage ───────────────────────────────────────────────────────
     linked_entity: str | None = entity_map.find_entity_by_attribute("knx", ga)
 
-    telegram_id = context.get("id") or TreeBuilder.generate_event_id(
-        f"knx:{ga}:{timestamp_ms}:{direction}"
+    # ── Deduplication ID ─────────────────────────────────────────────────────
+    # Use a content-based hash so the same physical telegram arriving via
+    # both knx_event AND knx/subscribe_telegrams produces the same ID and
+    # INSERT OR IGNORE silently drops the duplicate.
+    source_for_id = source or "?"
+    telegram_id = TreeBuilder.generate_event_id(
+        f"knx:{ga}:{source_for_id}:{telegram_type}:{timestamp_ms}"
     )
+    # Preserve HA context id for event-chain linkage when available
+    ha_context_id: str | None = context.get("id") or None
 
     telegram: dict[str, Any] = {
         "id": telegram_id,
@@ -486,10 +541,10 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
         "telegram_type": telegram_type,
         "raw_data": raw_hex,
         "decoded_value": decoded_str,
-        "dpt_type": data.get("dpt_name"),  # HA field is dpt_name
+        "dpt_type": dpt_type,
         "linked_entity_id": linked_entity,
         "linked_event_id": None,
-        "context_id": context.get("id"),
+        "context_id": ha_context_id,
     }
     try:
         await storage.insert_knx_telegram(telegram)
@@ -1050,11 +1105,15 @@ async def api_knx_diagnostics() -> dict[str, Any]:
     """Return KNX event ingestion diagnostics for debugging."""
     return {
         "received": _knx_diag["received"],
+        "received_by_source": _knx_diag.get("received_by_source", {}),
         "stored": _knx_diag["stored"],
         "dropped_no_ga": _knx_diag["dropped_no_ga"],
         "last_error": _knx_diag["last_error"],
         "recent_raw_events": list(_knx_diag["recent_raw"]),
         "ws_connected": ha_client.connected if ha_client else False,
+        "knx_subscription_active": (
+            ha_client._knx_sub_id is not None if ha_client else False
+        ),
     }
 
 

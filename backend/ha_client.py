@@ -46,6 +46,8 @@ class HAClient:
         self._reconnect_delay = 1.0
         self._max_reconnect_delay = 60.0
         self._task: asyncio.Task[None] | None = None
+        # Tracks the subscription ID for knx/subscribe_telegrams
+        self._knx_sub_id: int | None = None
 
     @property
     def connected(self) -> bool:
@@ -365,13 +367,43 @@ class HAClient:
 
         logger.info("ha_client.subscribed", event_types=HA_EVENT_TYPES)
 
+        # Subscribe to the KNX internal telegram stream (gives ALL telegrams,
+        # same source as the HA Group Monitor UI — no fire_event:true needed).
+        self._msg_id += 1
+        self._knx_sub_id = self._msg_id
+        await self._ws.send_json({
+            "id": self._knx_sub_id,
+            "type": "knx/subscribe_telegrams",
+        })
+        resp = await self._ws.receive_json()
+        if resp.get("success"):
+            logger.info("ha_client.knx_telegrams_subscribed", sub_id=self._knx_sub_id)
+        else:
+            logger.warning("ha_client.knx_telegrams_subscribe_failed", resp=resp)
+            self._knx_sub_id = None
+
         # Listen for events
         async for msg in self._ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
                     if data.get("type") == "event":
-                        await self._on_event(data.get("event", {}))
+                        event = data.get("event", {})
+                        if (
+                            self._knx_sub_id is not None
+                            and data.get("id") == self._knx_sub_id
+                        ):
+                            # knx/subscribe_telegrams event — wrap as synthetic event
+                            # so the existing processor can route it by event_type.
+                            synthetic: dict[str, Any] = {
+                                "event_type": "knx.telegram",
+                                "data": event,
+                                "time_fired": event.get("timestamp"),
+                                "context": {},
+                            }
+                            await self._on_event(synthetic)
+                        else:
+                            await self._on_event(event)
                 except json.JSONDecodeError:
                     logger.warning("ha_client.invalid_json")
                 except Exception:

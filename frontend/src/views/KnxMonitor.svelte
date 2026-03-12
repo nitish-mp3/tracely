@@ -603,9 +603,25 @@
                 </span>
               </div>
               <div class="diag-row">
+                <span class="diag-key">KNX telegram stream</span>
+                <span class="diag-val" class:ok={diagResult.knx_subscription_active} class:bad={!diagResult.knx_subscription_active}>
+                  {diagResult.knx_subscription_active ? '✓ Subscribed (all telegrams)' : '✗ Not subscribed — check logs'}
+                </span>
+              </div>
+              <div class="diag-row">
                 <span class="diag-key">Events received from HA</span>
                 <span class="diag-val" class:bad={diagResult.received === 0}>{diagResult.received}</span>
               </div>
+              {#if diagResult.received_by_source && Object.keys(diagResult.received_by_source).length}
+                <div class="diag-row">
+                  <span class="diag-key">By source</span>
+                  <span class="diag-val">
+                    {#each Object.entries(diagResult.received_by_source) as [src, cnt]}
+                      <span class="diag-source-tag">{src}: {cnt}</span>
+                    {/each}
+                  </span>
+                </div>
+              {/if}
               <div class="diag-row">
                 <span class="diag-key">Stored to DB</span>
                 <span class="diag-val">{diagResult.stored}</span>
@@ -620,8 +636,12 @@
                   <span class="diag-val bad">{diagResult.last_error}</span>
                 </div>
               {/if}
-              {#if diagResult.received === 0}
-                <div class="diag-hint">⚠ HA has sent 0 <code>knx_event</code> messages. Check that <code>fire_event: true</code> is set and HA has been restarted.</div>
+              {#if !diagResult.ws_connected}
+                <div class="diag-hint bad">✗ Not connected to HA. Check your HA token and URL in addon config.</div>
+              {:else if !diagResult.knx_subscription_active}
+                <div class="diag-hint bad">✗ KNX telegram stream subscription failed. The KNX integration may not be installed or active in HA.</div>
+              {:else if diagResult.received === 0}
+                <div class="diag-hint">⚠ Connected and subscribed — no telegrams yet. Trigger a KNX device and check again.</div>
               {:else if diagResult.stored === 0}
                 <div class="diag-hint">⚠ Events received but none stored. Check the <code>dropped_no_ga</code> count and the last error above.</div>
               {:else}
@@ -1495,7 +1515,9 @@
   .diag-val.bad { color: #ef4444; }
   .diag-hint { font-size: 12px; padding: 8px 12px; border-radius: 6px; background: #f59e0b18; color: var(--color-text-muted); margin-top: 4px; }
   .diag-hint.ok { background: #22c55e18; }
+  .diag-hint.bad { background: #ef444418; color: #f87171; }
   .diag-hint code { font-size: 11px; font-family: monospace; }
+  .diag-source-tag { display: inline-block; font-size: 11px; font-family: ui-monospace, monospace; background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 4px; padding: 1px 6px; margin-right: 4px; }
 
   .spinner {
     width: 22px;
