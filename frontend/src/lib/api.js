@@ -159,3 +159,67 @@ export function subscribeEvents(onEvent, onStatus) {
     if (onStatus) _sseStatusListeners.delete(onStatus);
   };
 }
+
+// ─── KNX ───────────────────────────────────────────────
+
+export async function getKnxTelegrams(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v);
+  }
+  return request(`/api/knx/telegrams${qs.toString() ? '?' + qs : ''}`);
+}
+
+export async function getKnxGroupAddresses(limit = 200) {
+  return request(`/api/knx/group-addresses?limit=${limit}`);
+}
+
+export async function getKnxFlow(groupAddress, aroundTs, windowMs = 5000) {
+  const qs = new URLSearchParams({ window_ms: windowMs });
+  if (aroundTs) qs.set('around', aroundTs);
+  return request(`/api/knx/flow/${encodeURIComponent(groupAddress)}?${qs}`);
+}
+
+// KNX SSE (separate singleton from the main events SSE)
+let _knxSseSource = null;
+let _knxSseReconnectTimer = null;
+let _knxSseRetryDelay = 1000;
+let _knxSseStopped = false;
+let _knxSseListeners = new Set();
+
+function _knxSseConnect() {
+  if (_knxSseStopped) return;
+  const url = `${BASE}/api/knx/stream`;
+  _knxSseSource = new EventSource(url);
+  _knxSseSource.onmessage = (msg) => {
+    try {
+      const tg = JSON.parse(msg.data);
+      _knxSseListeners.forEach(fn => fn(tg));
+    } catch { /* skip */ }
+  };
+  _knxSseSource.onerror = () => {
+    if (_knxSseStopped) return;
+    _knxSseSource.close();
+    _knxSseReconnectTimer = setTimeout(() => {
+      _knxSseRetryDelay = Math.min(_knxSseRetryDelay * 1.5, 30000);
+      _knxSseConnect();
+    }, _knxSseRetryDelay);
+  };
+}
+
+/** Subscribe to live KNX telegrams. Returns unsubscribe fn. */
+export function subscribeKnxEvents(onTelegram) {
+  if (_knxSseListeners.size === 0) {
+    _knxSseConnect(); // lazy-start
+  }
+  _knxSseListeners.add(onTelegram);
+  return () => {
+    _knxSseListeners.delete(onTelegram);
+    if (_knxSseListeners.size === 0 && _knxSseSource) {
+      _knxSseStopped = true;
+      _knxSseSource.close();
+      _knxSseSource = null;
+      _knxSseStopped = false; // allow re-start next time
+    }
+  };
+}

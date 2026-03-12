@@ -140,3 +140,19 @@ class EntityMap:
 
     def all_entities(self) -> list[EntityInfo]:
         return list(self._entities.values())
+
+    def find_entity_by_attribute(self, integration: str, value: str) -> str | None:
+        """Return the first entity_id whose attributes contain *value* anywhere.
+
+        Used to match KNX group addresses to HA entities by scanning attribute values.
+        Works across any KNX attribute key (group_address_switch, group_address_state, etc.).
+        """
+        for info in self._entities.values():
+            if info.integration and info.integration != integration:
+                continue
+            for attr_val in info.attributes.values():
+                if isinstance(attr_val, str) and attr_val == value:
+                    return info.entity_id
+                if isinstance(attr_val, list) and value in attr_val:
+                    return info.entity_id
+        return None

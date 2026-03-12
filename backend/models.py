@@ -101,3 +101,48 @@ class HealthResponse(BaseModel):
 
 class BookmarkRequest(BaseModel):
     note: str = ""
+
+
+# ─── KNX models ────────────────────────────────────────
+
+
+class KnxTelegramResponse(BaseModel):
+    id: str
+    timestamp: str          # ISO 8601
+    group_address: str
+    direction: str          # "Incoming" | "Outgoing"
+    source_address: str | None = None
+    telegram_type: str      # "GroupValueWrite" | "GroupValueRead" | "GroupValueResponse"
+    raw_data: str | None = None
+    decoded_value: str | None = None
+    dpt_type: str | None = None
+    linked_entity_id: str | None = None
+    linked_event_id: str | None = None
+    context_id: str | None = None
+
+
+class KnxGroupAddressResponse(BaseModel):
+    group_address: str
+    friendly_name: str | None = None
+    dpt_type: str | None = None
+    linked_entities: str | None = None     # JSON array string
+    last_seen: str | None = None           # ISO 8601
+    total_writes: int = 0
+    total_reads: int = 0
+    total_responses: int = 0
+    last_value: str | None = None
+
+
+class PaginatedKnxTelegrams(BaseModel):
+    total: int
+    page: int
+    limit: int
+    items: list[KnxTelegramResponse]
+
+
+class KnxFlowResponse(BaseModel):
+    group_address: str
+    around_ts: str               # ISO 8601 centre of the window
+    window_ms: int
+    knx_telegrams: list[KnxTelegramResponse]
+    ha_events: list[EventResponse]

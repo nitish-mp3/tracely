@@ -64,6 +64,37 @@ CREATE TABLE IF NOT EXISTS config (
   key   TEXT PRIMARY KEY,
   value TEXT
 );
+
+CREATE TABLE IF NOT EXISTS knx_telegrams (
+  id              TEXT    PRIMARY KEY,
+  timestamp       INTEGER NOT NULL,
+  group_address   TEXT    NOT NULL,
+  direction       TEXT    NOT NULL,   -- 'Incoming' | 'Outgoing'
+  source_address  TEXT,
+  telegram_type   TEXT    NOT NULL,   -- GroupValueWrite | GroupValueRead | GroupValueResponse
+  raw_data        TEXT,               -- hex string
+  decoded_value   TEXT,               -- JSON-encoded value (null if undecodable)
+  dpt_type        TEXT,               -- e.g. "1.001"
+  linked_entity_id TEXT,              -- HA entity that maps to this GA
+  linked_event_id  TEXT,              -- FK to events.id (state_changed or call_service)
+  context_id      TEXT                -- HA context.id from knx_event
+);
+CREATE INDEX IF NOT EXISTS idx_knx_time    ON knx_telegrams(timestamp);
+CREATE INDEX IF NOT EXISTS idx_knx_ga      ON knx_telegrams(group_address);
+CREATE INDEX IF NOT EXISTS idx_knx_entity  ON knx_telegrams(linked_entity_id);
+CREATE INDEX IF NOT EXISTS idx_knx_ctx     ON knx_telegrams(context_id);
+
+CREATE TABLE IF NOT EXISTS knx_group_addresses (
+  group_address   TEXT    PRIMARY KEY,
+  friendly_name   TEXT,
+  dpt_type        TEXT,
+  linked_entities TEXT,   -- JSON array of entity_ids
+  last_seen       INTEGER,
+  total_writes    INTEGER DEFAULT 0,
+  total_reads     INTEGER DEFAULT 0,
+  total_responses INTEGER DEFAULT 0,
+  last_value      TEXT    -- JSON-encoded last decoded value
+);
 """
 
 FTS_SQL = """
@@ -630,3 +661,154 @@ class Storage:
             "SELECT value FROM config WHERE key = ?", (key,),
         )
         return rows[0]["value"] if rows else None
+
+    # ─── KNX ───────────────────────────────────────────────
+
+    async def insert_knx_telegram(self, telegram: dict[str, Any]) -> None:
+        """Insert a KNX telegram and upsert its GA summary row."""
+        assert self._db is not None
+        await self._db.execute(
+            """INSERT OR IGNORE INTO knx_telegrams
+               (id, timestamp, group_address, direction, source_address,
+                telegram_type, raw_data, decoded_value, dpt_type,
+                linked_entity_id, linked_event_id, context_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                telegram["id"],
+                telegram["timestamp"],
+                telegram["group_address"],
+                telegram["direction"],
+                telegram.get("source_address"),
+                telegram["telegram_type"],
+                telegram.get("raw_data"),
+                telegram.get("decoded_value"),  # already JSON string
+                telegram.get("dpt_type"),
+                telegram.get("linked_entity_id"),
+                telegram.get("linked_event_id"),
+                telegram.get("context_id"),
+            ),
+        )
+        # Upsert GA summary
+        col = {
+            "GroupValueWrite":    "total_writes",
+            "GroupValueRead":     "total_reads",
+            "GroupValueResponse": "total_responses",
+        }.get(telegram["telegram_type"], "total_writes")
+        await self._db.execute(
+            f"""INSERT INTO knx_group_addresses
+                  (group_address, last_seen, {col}, last_value)
+                VALUES (?, ?, 1, ?)
+                ON CONFLICT(group_address) DO UPDATE SET
+                  last_seen = excluded.last_seen,
+                  {col} = {col} + 1,
+                  last_value = COALESCE(excluded.last_value, last_value)""",
+            (
+                telegram["group_address"],
+                telegram["timestamp"],
+                telegram.get("decoded_value"),
+            ),
+        )
+        await self._db.commit()
+
+    async def get_knx_telegrams(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+        group_address: str | None = None,
+        direction: str | None = None,
+        entity_id: str | None = None,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        assert self._db is not None
+        conditions: list[str] = []
+        params: list[Any] = []
+        if group_address:
+            conditions.append("group_address = ?")
+            params.append(group_address)
+        if direction:
+            conditions.append("direction = ?")
+            params.append(direction)
+        if entity_id:
+            conditions.append("linked_entity_id = ?")
+            params.append(entity_id)
+        if from_ts is not None:
+            conditions.append("timestamp >= ?")
+            params.append(from_ts)
+        if to_ts is not None:
+            conditions.append("timestamp <= ?")
+            params.append(to_ts)
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        count_rows = await self._db.execute_fetchall(
+            f"SELECT COUNT(*) as cnt FROM knx_telegrams{where}", params,
+        )
+        total = count_rows[0]["cnt"] if count_rows else 0
+        rows = await self._db.execute_fetchall(
+            f"SELECT * FROM knx_telegrams{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+        return [dict(r) for r in rows], total
+
+    async def get_knx_group_addresses(
+        self, limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        assert self._db is not None
+        rows = await self._db.execute_fetchall(
+            "SELECT * FROM knx_group_addresses ORDER BY last_seen DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in rows]
+
+    async def get_knx_flow(
+        self, group_address: str, around_ts: int, window_ms: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Return all events (KNX + HA) in a time window around a GA activity."""
+        assert self._db is not None
+        start = around_ts - window_ms
+        end   = around_ts + window_ms
+        # KNX telegrams for this GA in the window
+        knx_rows = await self._db.execute_fetchall(
+            """SELECT id, timestamp, 'knx_telegram' as event_type,
+                      group_address as entity_id, direction,
+                      telegram_type, decoded_value, source_address,
+                      linked_entity_id, linked_event_id, context_id,
+                      NULL as name
+               FROM knx_telegrams
+               WHERE group_address = ? AND timestamp BETWEEN ? AND ?
+               ORDER BY timestamp""",
+            (group_address, start, end),
+        )
+        # Linked HA events in the same window for affected entities
+        if knx_rows:
+            entity_ids = list({
+                r["linked_entity_id"] for r in knx_rows if r["linked_entity_id"]
+            })
+            if entity_ids:
+                placeholders = ",".join("?" * len(entity_ids))
+                ha_rows = await self._db.execute_fetchall(
+                    f"""SELECT id, timestamp, event_type, entity_id, name,
+                               domain, service, confidence, parent_id, user_id
+                        FROM events
+                        WHERE entity_id IN ({placeholders})
+                          AND timestamp BETWEEN ? AND ?
+                        ORDER BY timestamp""",
+                    [*entity_ids, start, end],
+                )
+            else:
+                ha_rows = []
+        else:
+            ha_rows = []
+        return [dict(r) for r in knx_rows], [dict(r) for r in ha_rows]
+
+    async def update_knx_ga_entity(
+        self, group_address: str, entity_id: str,
+    ) -> None:
+        """Update the entity mapping for a GA after discovering it from state changes."""
+        assert self._db is not None
+        await self._db.execute(
+            """UPDATE knx_telegrams
+               SET linked_entity_id = ?
+               WHERE group_address = ? AND linked_entity_id IS NULL""",
+            (entity_id, group_address),
+        )
+        await self._db.commit()

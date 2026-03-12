@@ -39,6 +39,8 @@ class Normalizer:
                 return "Home Assistant started"
             case "homeassistant_stop":
                 return "Home Assistant stopped"
+            case "knx_event":
+                return self._label_knx_event(data)
             case _:
                 return f"{event_type} event"
 
@@ -57,6 +59,9 @@ class Normalizer:
                 return data.get("entity_id")
             case "script_started" | "script_finished":
                 return data.get("entity_id")
+            case "knx_event":
+                ga = data.get("destination_address") or data.get("group_address", "")
+                return f"knx.{ga.replace('/', '_')}" if ga else None
             case _:
                 return data.get("entity_id")
 
@@ -123,3 +128,35 @@ class Normalizer:
         if name and message:
             return f"{name}: {message}"
         return name or message or "Logbook entry"
+
+    def _label_knx_event(self, data: dict) -> str:
+        ga   = data.get("destination_address") or data.get("group_address", "?")
+        src  = data.get("source_address", "")
+        ttype = data.get("telegramtype", "")
+        direction = data.get("direction", "")
+        value = data.get("value")
+
+        # Human-readable telegram type
+        tmap = {
+            "GroupValueWrite":    "Write",
+            "GroupValueRead":     "Read",
+            "GroupValueResponse": "Response",
+        }
+        tshort = tmap.get(ttype, ttype)
+
+        # Direction arrow
+        arrow = "←" if direction == "Incoming" else "→"
+
+        # Value label
+        if value is None:
+            val_label = ""
+        elif isinstance(value, bool):
+            val_label = ": ON" if value else ": OFF"
+        elif isinstance(value, (int, float)):
+            val_label = f": {value}"
+        else:
+            val_label = f": {value!s}"
+
+        if src and direction == "Incoming":
+            return f"KNX {ga} {arrow} {tshort}{val_label}  (from {src})"
+        return f"KNX {ga} {arrow} {tshort}{val_label}"

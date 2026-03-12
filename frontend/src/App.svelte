@@ -5,6 +5,7 @@
   import Search from './views/Search.svelte';
   import Stats from './views/Stats.svelte';
   import SystemHealth from './views/SystemHealth.svelte';
+  import KnxMonitor from './views/KnxMonitor.svelte';
   import Toast from './components/Toast.svelte';
   import { currentView, filtersOpen, healthStatus, addToast } from './stores/config.js';
   import { filters, hasActiveFilters, viewHistory } from './stores/events.js';
@@ -123,6 +124,17 @@
           </svg>
           Health
         </button>
+        <button
+          class="nav-pill knx-pill"
+          class:active={$currentView === 'knx'}
+          on:click={() => handleNav('knx')}
+        >
+          <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="3" cy="8" r="1.5" /><circle cx="8" cy="3" r="1.5" /><circle cx="13" cy="8" r="1.5" /><circle cx="8" cy="13" r="1.5" />
+            <path d="M4.5 8h7M8 4.5v7" />
+          </svg>
+          KNX
+        </button>
       </nav>
     </div>
 
@@ -183,6 +195,8 @@
       <Stats />
     {:else if $currentView === 'health'}
       <SystemHealth />
+    {:else if $currentView === 'knx'}
+      <KnxMonitor />
     {/if}
   </main>
 
@@ -278,6 +292,9 @@
     color: var(--color-text);
     background: var(--color-surface);
     box-shadow: var(--shadow-xs);
+  }
+  .nav-pill.knx-pill.active {
+    color: #818cf8;
   }
   .nav-icon {
     width: 14px;

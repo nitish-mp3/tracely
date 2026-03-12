@@ -30,7 +30,11 @@ from .models import (
     EventRecord,
     EventResponse,
     HealthResponse,
+    KnxFlowResponse,
+    KnxGroupAddressResponse,
+    KnxTelegramResponse,
     PaginatedEvents,
+    PaginatedKnxTelegrams,
 )
 from .normalizer import Normalizer
 from .purge import PurgeManager
@@ -49,8 +53,10 @@ tree_builder = TreeBuilder(storage, settings)
 purge_manager = PurgeManager(storage, settings)
 ha_client: HAClient | None = None
 
-# SSE clients
+# SSE clients — general events
 sse_clients: set[asyncio.Queue[str]] = set()
+# SSE clients — KNX telegrams
+knx_sse_clients: set[asyncio.Queue[str]] = set()
 
 # Dedup / rate state
 _dedup_cache: dict[str, float] = {}
@@ -250,6 +256,11 @@ async def _event_processor() -> None:
             # Block-wait for the first event
             raw = await _event_queue.get()
             batch: list[EventRecord] = []
+            # KNX events are handled separately (not stored in events table)
+            if raw.get("event_type") == "knx_event":
+                await _process_knx_event(raw)
+                continue
+
             record = _normalize_raw_event(raw)
             if record:
                 batch.append(record)
@@ -259,6 +270,9 @@ async def _event_processor() -> None:
             while not _event_queue.empty() and len(batch) < 200:
                 try:
                     raw = _event_queue.get_nowait()
+                    if raw.get("event_type") == "knx_event":
+                        await _process_knx_event(raw)
+                        continue
                     rec = _normalize_raw_event(raw)
                     if rec:
                         batch.append(rec)
@@ -328,6 +342,126 @@ async def _run_backfill(client: HAClient, days: int) -> None:
         logger.info("backfill.cancelled")
     except Exception:
         logger.exception("backfill.error")
+
+
+# ─── KNX helpers ────────────────────────────────────────
+
+
+def _knx_epoch_ms(time_fired: str | None) -> int:
+    if time_fired:
+        try:
+            dt = datetime.fromisoformat(time_fired.replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000)
+        except (ValueError, AttributeError):
+            pass
+    return _epoch_ms()
+
+
+def _knx_to_response(row: dict[str, Any]) -> KnxTelegramResponse:
+    ts = row.get("timestamp", 0)
+    iso = (
+        datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
+        if ts else ""
+    )
+    return KnxTelegramResponse(
+        id=row["id"],
+        timestamp=iso,
+        group_address=row["group_address"],
+        direction=row["direction"],
+        source_address=row.get("source_address"),
+        telegram_type=row["telegram_type"],
+        raw_data=row.get("raw_data"),
+        decoded_value=row.get("decoded_value"),
+        dpt_type=row.get("dpt_type"),
+        linked_entity_id=row.get("linked_entity_id"),
+        linked_event_id=row.get("linked_event_id"),
+        context_id=row.get("context_id"),
+    )
+
+
+def _knx_ga_to_response(row: dict[str, Any]) -> KnxGroupAddressResponse:
+    ts = row.get("last_seen", 0)
+    iso = (
+        datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
+        if ts else None
+    )
+    return KnxGroupAddressResponse(
+        group_address=row["group_address"],
+        friendly_name=row.get("friendly_name"),
+        dpt_type=row.get("dpt_type"),
+        linked_entities=row.get("linked_entities"),
+        last_seen=iso,
+        total_writes=row.get("total_writes") or 0,
+        total_reads=row.get("total_reads") or 0,
+        total_responses=row.get("total_responses") or 0,
+        last_value=row.get("last_value"),
+    )
+
+
+async def _process_knx_event(raw_event: dict[str, Any]) -> None:
+    """Extract KNX telegram from a raw knx_event and persist it."""
+    data = raw_event.get("data", {})
+    context = raw_event.get("context", {})
+    time_fired = raw_event.get("time_fired")
+    timestamp_ms = _knx_epoch_ms(time_fired)
+
+    ga = data.get("destination_address") or data.get("group_address") or ""
+    if not ga:
+        return
+
+    telegram_type = data.get("telegramtype") or data.get("telegram_type") or "Unknown"
+    direction = data.get("direction", "Incoming")
+    source = data.get("source_address") or data.get("source")
+
+    # Raw bytes → hex string
+    raw = data.get("data")
+    raw_hex: str | None = None
+    if isinstance(raw, (list, bytes)):
+        raw_hex = bytes(raw).hex() if isinstance(raw, list) else raw.hex()
+    elif isinstance(raw, str):
+        raw_hex = raw
+
+    # Decoded value → JSON-safe string
+    decoded = data.get("value")
+    decoded_str: str | None = json.dumps(decoded, default=str) if decoded is not None else None
+
+    # Try to find entity linked to this GA via entity_map
+    linked_entity: str | None = entity_map.find_entity_by_attribute("knx", ga)
+
+    telegram_id = context.get("id") or TreeBuilder.generate_event_id(
+        f"knx:{ga}:{timestamp_ms}:{direction}"
+    )
+
+    telegram: dict[str, Any] = {
+        "id": telegram_id,
+        "timestamp": timestamp_ms,
+        "group_address": ga,
+        "direction": direction,
+        "source_address": source,
+        "telegram_type": telegram_type,
+        "raw_data": raw_hex,
+        "decoded_value": decoded_str,
+        "dpt_type": None,
+        "linked_entity_id": linked_entity,
+        "linked_event_id": None,
+        "context_id": context.get("id"),
+    }
+    try:
+        await storage.insert_knx_telegram(telegram)
+    except Exception:
+        logger.exception("knx.insert_error", ga=ga)
+        return
+
+    # Fan-out to KNX SSE clients
+    resp = _knx_to_response(telegram)
+    sse_data = resp.model_dump_json()
+    dead: set[asyncio.Queue[str]] = set()
+    for client in knx_sse_clients:
+        try:
+            client.put_nowait(sse_data)
+        except asyncio.QueueFull:
+            dead.add(client)
+    knx_sse_clients.difference_update(dead)
 
 
 def _fan_out_sse(record: EventRecord) -> None:
@@ -744,6 +878,96 @@ async def api_metrics() -> Response:
     ws_connected = ha_client.connected if ha_client else False
     text = get_metrics_text(event_count, db_size, ws_connected)
     return Response(content=text, media_type="text/plain")
+
+
+# ─── KNX API endpoints ──────────────────────────────────
+
+
+@app.get("/api/knx/telegrams", response_model=PaginatedKnxTelegrams)
+async def api_knx_telegrams(
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=500),
+    group_address: str | None = Query(None),
+    direction: str | None = Query(None),
+    entity: str | None = Query(None),
+) -> PaginatedKnxTelegrams:
+    from_str = request.query_params.get("from")
+    to_str = request.query_params.get("to")
+    from_ts = _parse_timestamp(from_str)
+    to_ts = _parse_timestamp(to_str)
+    if from_ts is not None and to_ts is None:
+        to_ts = _epoch_ms()
+    offset = (page - 1) * limit
+    rows, total = await storage.get_knx_telegrams(
+        limit=limit,
+        offset=offset,
+        group_address=group_address,
+        direction=direction,
+        entity_id=entity,
+        from_ts=from_ts,
+        to_ts=to_ts,
+    )
+    return PaginatedKnxTelegrams(
+        total=total,
+        page=page,
+        limit=limit,
+        items=[_knx_to_response(r) for r in rows],
+    )
+
+
+@app.get("/api/knx/stream")
+async def api_knx_stream(request: Request) -> StreamingResponse:
+    """SSE stream for live KNX telegrams."""
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=200)
+    knx_sse_clients.add(queue)
+
+    async def generate() -> AsyncGenerator[str, None]:
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=30)
+                    yield f"data: {data}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            knx_sse_clients.discard(queue)
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/api/knx/group-addresses")
+async def api_knx_group_addresses(
+    limit: int = Query(200, ge=1, le=1000),
+) -> dict[str, Any]:
+    rows = await storage.get_knx_group_addresses(limit=limit)
+    return {
+        "total": len(rows),
+        "items": [_knx_ga_to_response(r).model_dump() for r in rows],
+    }
+
+
+@app.get("/api/knx/flow/{group_address:path}")
+async def api_knx_flow(
+    group_address: str,
+    around: str | None = Query(None),
+    window_ms: int = Query(5000, ge=500, le=60000),
+) -> KnxFlowResponse:
+    """Return all KNX telegrams and linked HA events in a time window around a GA."""
+    around_ts = _parse_timestamp(around) or _epoch_ms()
+    knx_rows, ha_rows = await storage.get_knx_flow(
+        group_address, around_ts=around_ts, window_ms=window_ms,
+    )
+    around_iso = datetime.fromtimestamp(around_ts / 1000, tz=timezone.utc).isoformat()
+    return KnxFlowResponse(
+        group_address=group_address,
+        around_ts=around_iso,
+        window_ms=window_ms,
+        knx_telegrams=[_knx_to_response(r) for r in knx_rows],
+        ha_events=[_to_response(r) for r in ha_rows],
+    )
 
 
 # ─── Static frontend files ──────────────────────────────

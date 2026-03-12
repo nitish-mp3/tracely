@@ -23,6 +23,7 @@ HA_EVENT_TYPES = [
     "logbook_entry",
     "homeassistant_start",
     "homeassistant_stop",
+    "knx_event",
 ]
 
 
