@@ -517,7 +517,7 @@
 
 
   /* Network Table (compact) */
-  .network-table { padding: 0 var(--sp-4) var(--sp-3); }
+  .network-table { padding: var(--sp-2) var(--sp-4) var(--sp-3); }
   .net-table-head {
     display: grid; grid-template-columns: 1fr 120px 100px 90px;
     gap: var(--sp-2); padding: var(--sp-1) var(--sp-2);
@@ -567,7 +567,7 @@
   .show-more-btn:hover { background: var(--color-surface-hover); }
 
   /* Integration Breakdown */
-  .integration-list { display: flex; flex-direction: column; gap: var(--sp-1); padding: 0 var(--sp-4) var(--sp-3); }
+  .integration-list { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-2) var(--sp-4) var(--sp-3); }
   .integration-row {
     display: flex; align-items: center; gap: var(--sp-3);
     font-size: var(--text-sm);
@@ -665,7 +665,7 @@
   .empty-note { color: var(--color-text-muted); font-size: var(--text-sm); padding: 0 var(--sp-4) var(--sp-3); }
 
   /* Area Breakdown */
-  .area-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: 0 var(--sp-4) var(--sp-3); }
+  .area-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-2) var(--sp-4) var(--sp-3); }
   .area-chip {
     display: flex; align-items: center; gap: var(--sp-2);
     padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-full);
@@ -682,7 +682,7 @@
   }
 
   /* Domain Breakdown */
-  .domain-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: 0 var(--sp-4) var(--sp-3); }
+  .domain-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: var(--sp-2) var(--sp-4) var(--sp-3); }
   .domain-chip {
     display: flex; align-items: center; gap: var(--sp-1);
     padding: 3px var(--sp-2); border-radius: var(--radius-full);

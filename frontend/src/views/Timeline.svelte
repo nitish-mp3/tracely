@@ -35,6 +35,7 @@
       if ($filters.area) params.area = $filters.area;
       if ($filters.user_id) params.user_id = $filters.user_id;
       if ($filters.event_type) params.event_type = $filters.event_type;
+      if ($filters.integration) params.integration = $filters.integration;
       if ($filters.q) params.q = $filters.q;
       if ($filters.from) params.from = $filters.from;
       if ($filters.to) params.to = $filters.to;
@@ -73,6 +74,11 @@
 
   function handleDomainTagClick(domain) {
     $selectedDomainTag = domain;
+  }
+
+  function handleIntegrationTagClick(integration) {
+    $filters = { ...$filters, integration };
+    $currentView = 'timeline';
   }
 
   function flashLive() {
@@ -194,6 +200,7 @@
             on:click={() => handleEventClick(event)}
             on:tagclick={(e) => handleEntityTagClick(e.detail)}
             on:domainclick={(e) => handleDomainTagClick(e.detail)}
+            on:integrationclick={(e) => handleIntegrationTagClick(e.detail)}
             on:viewin={(e) => { $currentView = e.detail; }}
           />
         </li>

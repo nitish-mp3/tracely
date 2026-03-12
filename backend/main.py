@@ -629,6 +629,7 @@ async def api_get_events(
     area: str | None = Query(None),
     user_id: str | None = Query(None),
     event_type: str | None = Query(None),
+    integration: str | None = Query(None),
     q: str | None = Query(None),
 ) -> PaginatedEvents:
     # Parse from/to from raw query params (reserved word in Python)
@@ -660,7 +661,7 @@ async def api_get_events(
     rows, total = await storage.get_events(
         page=page, limit=limit, entity=entity, domain=domain,
         area=area, user_id=user_id, event_type=event_type,
-        from_ts=from_ts, to_ts=to_ts,
+        integration=integration, from_ts=from_ts, to_ts=to_ts,
     )
     return PaginatedEvents(
         total=total, page=page, limit=limit,

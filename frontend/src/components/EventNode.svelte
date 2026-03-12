@@ -2,6 +2,7 @@
   import { createEventDispatcher } from 'svelte';
   import ConfidenceBadge from './ConfidenceBadge.svelte';
   import DomainIcon from './DomainIcon.svelte';
+  import { monitorTarget } from '../stores/events.js';
 
   export let event;
   export let compact = false;
@@ -134,8 +135,14 @@
     if (event.domain) dispatch('domainclick', event.domain);
   }
 
+  function handleIntegrationClick(e) {
+    e.stopPropagation();
+    if (event.integration) dispatch('integrationclick', event.integration);
+  }
+
   function handleViewInMonitor(e, view) {
     e.stopPropagation();
+    monitorTarget.set({ eventId: event.id, entityId: event.entity_id, timestamp: event.timestamp, view });
     dispatch('viewin', view);
   }
 
@@ -203,9 +210,9 @@
         </span>
       {/if}
       {#if event.integration}
-        <span class="tag integration-tag" title="Integration: {event.integration}">
+        <button class="tag integration-tag" on:click={handleIntegrationClick} title="Filter by integration: {event.integration}">
           {event.integration}
-        </span>
+        </button>
       {/if}
       {#if isKnx}
         <button class="tag crosslink-tag knx-link" on:click={(e) => handleViewInMonitor(e, 'knx')} title="View in KNX Monitor">
@@ -354,7 +361,11 @@
   }
   .integration-tag {
     color: var(--color-text-secondary); background: var(--color-surface-hover);
-    border-color: var(--color-border);
+    border-color: var(--color-border); cursor: pointer;
+  }
+  .integration-tag:hover {
+    color: var(--color-text); border-color: var(--color-border-hover);
+    transform: translateY(-1px); box-shadow: 0 1px 4px rgba(0,0,0,.1);
   }
 
   /* Cross-link monitor buttons */

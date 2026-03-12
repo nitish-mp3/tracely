@@ -2,8 +2,39 @@
   import { onMount, onDestroy } from 'svelte';
   import { getKnxTelegrams, getKnxGroupAddresses, getKnxFlow, subscribeKnxEvents, getKnxActivity, subscribeEvents } from '../lib/api.js';
   import { currentView } from '../stores/config.js';
-  import { selectedEventId } from '../stores/events.js';
+  import { selectedEventId, monitorTarget } from '../stores/events.js';
   import EventNode from '../components/EventNode.svelte';
+
+  // Navigation target (from timeline click)
+  let highlightId = null;
+
+  // Telegram detail panel
+  let selectedTelegram = null;
+  $: selectedTgIndex = selectedTelegram ? telegrams.findIndex(t => t.id === selectedTelegram.id) : -1;
+
+  function openTelegram(tg) { selectedTelegram = tg; }
+  function closeTelegramPanel() { selectedTelegram = null; }
+  function prevTelegram() {
+    if (selectedTgIndex > 0) selectedTelegram = telegrams[selectedTgIndex - 1];
+  }
+  function nextTelegram() {
+    if (selectedTgIndex < telegrams.length - 1) selectedTelegram = telegrams[selectedTgIndex + 1];
+  }
+
+  function timeAgo(iso) {
+    if (!iso) return '';
+    const diff = Date.now() - new Date(iso).getTime();
+    if (diff < 60000) return `${Math.round(diff / 1000)}s ago`;
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+    return `${Math.floor(diff / 86400000)}d ago`;
+  }
+
+  function hexGroup(raw) {
+    if (!raw) return [];
+    // split hex string into groups of 2 chars
+    return raw.match(/.{1,2}/g) || [];
+  }
 
   // ── Tab state ──────────────────────────────────────────
   let activeTab = 'telegrams'; // 'telegrams' | 'activity'
@@ -167,14 +198,23 @@
       const payload = JSON.parse(event.payload || '{}');
       const ns = payload.new_state || payload;
       const attrs = ns?.attributes || {};
-      const details = [];
       const stateVal = ns?.state;
-      if (stateVal !== undefined && stateVal !== null && stateVal !== 'unavailable' && stateVal !== 'unknown')
-        details.push({ key: 'Value', val: String(stateVal), type: 'info' });
-      if (attrs.unit_of_measurement) details.push({ key: 'Unit', val: attrs.unit_of_measurement, type: 'info' });
-      if (attrs.device_class) details.push({ key: 'Type', val: attrs.device_class, type: 'info' });
-      if (attrs.state_class) details.push({ key: 'StateClass', val: attrs.state_class, type: 'info' });
-      if (attrs.knx_group_address_send) details.push({ key: 'GA', val: attrs.knx_group_address_send, type: 'info' });
+      const details = [];
+
+      // Combine value + unit into one readable chip
+      const unit = attrs.unit_of_measurement;
+      const dc = attrs.device_class;
+      if (unit && stateVal !== undefined && stateVal !== 'unavailable' && stateVal !== 'unknown') {
+        details.push({ key: dc || 'Value', val: `${stateVal} ${unit}`, type: 'info' });
+      } else if (stateVal !== undefined && stateVal !== null && stateVal !== 'unavailable' && stateVal !== 'unknown') {
+        if (dc) details.push({ key: dc, val: String(stateVal), type: 'info' });
+        else details.push({ key: 'Value', val: String(stateVal), type: 'info' });
+      }
+
+      // KNX-specific: group address
+      const ga = attrs.knx_group_address_send || attrs.group_address || attrs.knx_group_address;
+      if (ga) details.push({ key: 'GA', val: String(ga), type: 'info' });
+
       return details;
     } catch { return []; }
   }
@@ -289,7 +329,22 @@
   }
 
   onMount(async () => {
+    // Check if navigated here from timeline with a target event
+    const target = $monitorTarget;
+    if (target && target.view === 'knx') {
+      if (target.entityId) filterEntity = target.entityId;
+      highlightId = target.eventId || null;
+      activeTab = 'activity';
+      monitorTarget.set(null);
+    }
     await Promise.all([loadTelegrams(), loadGAs(), loadActivity()]);
+    // After load, scroll to highlighted activity event
+    if (highlightId) {
+      setTimeout(() => {
+        const el = document.querySelector(`[data-event-id="${highlightId}"]`);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 300);
+    }
     unsubscribeKnx = subscribeKnxEvents(handleLiveTelegram);
     // Also listen to main SSE for KNX entity state changes
     unsubActivitySSE = subscribeEvents(
@@ -446,8 +501,9 @@
                 class="tg-row"
                 class:incoming={tg.direction === 'Incoming'}
                 class:outgoing={tg.direction === 'Outgoing'}
-                on:click={() => openGA(tg.group_address, tg.timestamp)}
-                aria-label="View flow for {tg.group_address}"
+                class:tg-selected={selectedTelegram?.id === tg.id}
+                on:click={() => openTelegram(tg)}
+                aria-label="View telegram details for {tg.group_address}"
               >
                 <td class="col-time" title={tg.timestamp}>{fmtTime(tg.timestamp)}</td>
                 <td class="col-dir">
@@ -523,11 +579,12 @@
       {:else}
         <ul class="activity-list">
           {#each activityEvents as event (event.id)}
-            <li class="activity-item">
+            <li class="activity-item" class:highlighted={event.id === highlightId} data-event-id={event.id}>
               <EventNode
                 {event}
                 on:click={() => handleActivityEventClick(event)}
                 on:viewin={(e) => { $currentView = e.detail; }}
+                on:integrationclick
               />
               {#if getKnxDetails(event).length > 0}
                 <div class="proto-details">
@@ -589,7 +646,119 @@
 
 </div>
 
-<!-- ── Flow detail panel (slide-in) ─────────────────── -->
+<!-- ── Telegram detail modal ─────────────────────── -->
+{#if selectedTelegram}
+  <!-- svelte-ignore a11y-click-events-have-key-events -->
+  <div class="tg-overlay" on:click={closeTelegramPanel} role="button" tabindex="0" aria-label="Close" />
+  <div class="tg-modal" role="dialog" aria-label="KNX Telegram detail">
+
+    <!-- Modal header -->
+    <div class="tg-modal-header">
+      <div class="tg-modal-title-group">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <circle cx="3" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/><path d="M4.5 8h7"/>
+        </svg>
+        <span class="tg-modal-title">KNX Telegram</span>
+      </div>
+      <div class="tg-modal-header-right">
+        <span class="tg-modal-time">{fmtDateTime(selectedTelegram.timestamp)} ({timeAgo(selectedTelegram.timestamp)})</span>
+        {#if selectedTelegram.direction === 'Outgoing'}
+          <span class="tg-dir-pill outgoing">OUTGOING</span>
+        {:else}
+          <span class="tg-dir-pill incoming">INCOMING</span>
+        {/if}
+        <button class="close-btn" on:click={closeTelegramPanel} aria-label="Close">
+          <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2l8 8M10 2l-8 8"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Source → Destination row -->
+    <div class="tg-addr-row">
+      <div class="tg-addr-block">
+        <div class="tg-addr-label">Source</div>
+        <div class="tg-addr-value">{selectedTelegram.source_address ?? '—'}</div>
+        {#if selectedTelegram.direction === 'Outgoing'}
+          <div class="tg-addr-sub">Home Assistant</div>
+        {/if}
+      </div>
+      <div class="tg-addr-arrow">
+        <svg viewBox="0 0 24 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <path d="M0 4h20M16 1l4 3-4 3"/>
+        </svg>
+      </div>
+      <div class="tg-addr-block">
+        <div class="tg-addr-label">Destination</div>
+        <div class="tg-addr-value">{selectedTelegram.group_address ?? '—'}</div>
+        {#if selectedTelegram.linked_entity_id}
+          <div class="tg-addr-sub">{selectedTelegram.linked_entity_id.split('.').pop()}</div>
+        {/if}
+      </div>
+    </div>
+
+    <!-- Value highlight -->
+    <div class="tg-value-block">
+      <div class="tg-value-label">Value</div>
+      <div class="tg-value-display">{decodeValue(selectedTelegram.decoded_value)}</div>
+    </div>
+
+    <!-- Details grid -->
+    <div class="tg-details-grid">
+      <div class="tg-detail-cell">
+        <div class="tg-detail-label">Type</div>
+        <div class="tg-detail-value bold">{selectedTelegram.telegram_type ?? '—'}</div>
+      </div>
+      <div class="tg-detail-cell">
+        <div class="tg-detail-label">DPT</div>
+        <div class="tg-detail-value bold">{selectedTelegram.dpt ?? 'DPT'}</div>
+      </div>
+      {#if selectedTelegram.linked_entity_id}
+        <div class="tg-detail-cell" style="grid-column: 1/-1">
+          <div class="tg-detail-label">HA Entity</div>
+          <div class="tg-detail-value mono">{selectedTelegram.linked_entity_id}</div>
+        </div>
+      {/if}
+    </div>
+
+    <!-- Payload bytes -->
+    <div class="tg-payload-block">
+      <div class="tg-detail-label">Payload</div>
+      {#if selectedTelegram.raw_data}
+        <div class="tg-hex-row">
+          {#each hexGroup(selectedTelegram.raw_data) as byte}
+            <span class="tg-hex-byte">{byte}</span>
+          {/each}
+        </div>
+      {:else}
+        <div class="tg-payload-empty">no payload</div>
+      {/if}
+    </div>
+
+    <!-- Actions: GA flow + navigation -->
+    <div class="tg-modal-footer">
+      <button class="tg-flow-btn" on:click={() => { closeTelegramPanel(); openGA(selectedTelegram.group_address, selectedTelegram.timestamp); }}
+        title="View all telegrams for {selectedTelegram.group_address} in ±8s window">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <path d="M3 8h10M9 4l4 4-4 4"/>
+        </svg>
+        View GA Flow ({selectedTelegram.group_address})
+      </button>
+      <div class="tg-nav">
+        <button class="tg-nav-btn" disabled={selectedTgIndex <= 0} on:click={prevTelegram} aria-label="Previous telegram">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M10 4l-5 4 5 4"/></svg>
+          Previous
+        </button>
+        <span class="tg-nav-pos">{selectedTgIndex + 1} / {telegrams.length}</span>
+        <button class="tg-nav-btn" disabled={selectedTgIndex >= telegrams.length - 1} on:click={nextTelegram} aria-label="Next telegram">
+          Next
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 4l5 4-5 4"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- ── GA flow panel (slide-in, from GA sidebar) ────── -->
 {#if selectedGA}
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <div class="panel-overlay" on:click={closePanel} aria-label="Close panel" role="button" tabindex="0" />
@@ -610,8 +779,6 @@
       <div class="flow-loading"><div class="spinner" /></div>
     {:else if flowData}
       <div class="flow-body">
-
-        <!-- KNX telegrams section -->
         {#if flowData.knx_telegrams?.length > 0}
           <div class="flow-section">
             <div class="flow-section-title">
@@ -621,9 +788,7 @@
               KNX Telegrams ({flowData.knx_telegrams.length})
             </div>
             {#each flowData.knx_telegrams as tg}
-              <div class="flow-row knx"
-                   class:incoming={tg.direction === 'Incoming'}
-                   class:outgoing={tg.direction === 'Outgoing'}>
+              <div class="flow-row knx" class:incoming={tg.direction === 'Incoming'} class:outgoing={tg.direction === 'Outgoing'}>
                 <div class="flow-row-head">
                   {#if tg.direction === 'Incoming'}
                     <span class="dir-badge incoming">↓ IN</span>
@@ -637,10 +802,6 @@
                 </div>
                 <div class="flow-row-body">
                   <div class="flow-detail-row">
-                    <span class="flow-key">Address</span>
-                    <span class="flow-val ga-chip-sm">{tg.group_address}</span>
-                  </div>
-                  <div class="flow-detail-row">
                     <span class="flow-key">Value</span>
                     <span class="flow-val value-highlight">{decodeValue(tg.decoded_value)}</span>
                   </div>
@@ -652,14 +813,8 @@
                   {/if}
                   {#if tg.raw_data}
                     <div class="flow-detail-row">
-                      <span class="flow-key">Raw (hex)</span>
+                      <span class="flow-key">Raw</span>
                       <span class="flow-val mono small">{tg.raw_data}</span>
-                    </div>
-                  {/if}
-                  {#if tg.linked_entity_id}
-                    <div class="flow-detail-row">
-                      <span class="flow-key">HA Entity</span>
-                      <span class="flow-val entity-link">{tg.linked_entity_id}</span>
                     </div>
                   {/if}
                 </div>
@@ -667,8 +822,6 @@
             {/each}
           </div>
         {/if}
-
-        <!-- HA Events section -->
         {#if flowData.ha_events?.length > 0}
           <div class="flow-section">
             <div class="flow-section-title">
@@ -684,29 +837,18 @@
                   <span class="flow-time">{fmtDateTime(ev.timestamp)}</span>
                 </div>
                 <div class="flow-row-body">
-                  {#if ev.name}
-                    <div class="ha-name">{ev.name}</div>
-                  {/if}
+                  {#if ev.name}<div class="ha-name">{ev.name}</div>{/if}
                   {#if ev.entity_id}
                     <div class="flow-detail-row">
                       <span class="flow-key">Entity</span>
                       <span class="flow-val entity-link">{ev.entity_id}</span>
                     </div>
                   {/if}
-                  <div class="flow-detail-row">
-                    <span class="flow-key">Type</span>
-                    <span class="flow-val mono small">{ev.event_type}</span>
-                  </div>
-                  <div class="flow-detail-row">
-                    <span class="flow-key">Confidence</span>
-                    <span class="flow-val conf-{ev.confidence}">{ev.confidence}</span>
-                  </div>
                 </div>
               </div>
             {/each}
           </div>
         {/if}
-
         {#if !flowData.knx_telegrams?.length && !flowData.ha_events?.length}
           <div class="flow-empty">No activity found in the 8-second window.</div>
         {/if}
@@ -1393,6 +1535,12 @@
   .activity-item {
     animation: fadeIn 0.2s ease both;
   }
+  .activity-item.highlighted {
+    border-left: 3px solid var(--color-primary, #6366f1);
+    background: color-mix(in srgb, var(--color-primary, #6366f1) 8%, transparent);
+    border-radius: 4px;
+    outline: 1px solid color-mix(in srgb, var(--color-primary, #6366f1) 30%, transparent);
+  }
 
   /* ── Protocol Detail Chips ────────────────── */
   .proto-details {
@@ -1412,4 +1560,266 @@
   .proto-ok .pc-v { color: var(--color-success); }
   .proto-bad .pc-v { color: var(--color-error, #ef4444); }
   .proto-warn .pc-v { color: #f59e0b; }
+
+  /* ── Selected row highlight ─────────────────── */
+  .tg-row.tg-selected {
+    background: color-mix(in srgb, var(--color-primary, #6366f1) 8%, transparent);
+    outline: 1px solid rgba(99,102,241,.25);
+  }
+
+  /* ── Telegram detail modal ───────────────────── */
+  .tg-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    backdrop-filter: blur(2px);
+    z-index: 200;
+  }
+
+  .tg-modal {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(540px, 95vw);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 14px;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.35);
+    z-index: 201;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: modal-in 0.18s ease;
+  }
+
+  @keyframes modal-in {
+    from { opacity: 0; transform: translate(-50%, calc(-50% + 12px)); }
+    to   { opacity: 1; transform: translate(-50%, -50%); }
+  }
+
+  .tg-modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 18px 20px 14px;
+    border-bottom: 1px solid var(--color-border);
+    gap: 12px;
+  }
+
+  .tg-modal-title-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tg-modal-title-group svg { width: 18px; height: 18px; color: var(--color-primary, #6366f1); flex-shrink: 0; }
+  .tg-modal-title { font-size: 16px; font-weight: 700; color: var(--color-text); }
+
+  .tg-modal-header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+
+  .tg-modal-time {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tg-dir-pill {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 3px 10px;
+    border-radius: 999px;
+  }
+  .tg-dir-pill.outgoing { background: rgba(99,102,241,.15); color: #818cf8; }
+  .tg-dir-pill.incoming { background: rgba(34,197,94,.15);  color: #4ade80; }
+
+  /* Source → Destination */
+  .tg-addr-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .tg-addr-block {
+    flex: 1;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    padding: 12px 16px;
+    min-width: 0;
+  }
+
+  .tg-addr-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--color-text-muted);
+    margin-bottom: 5px;
+  }
+
+  .tg-addr-value {
+    font-family: ui-monospace, monospace;
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--color-text);
+    letter-spacing: -0.01em;
+  }
+
+  .tg-addr-sub {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    margin-top: 3px;
+  }
+
+  .tg-addr-arrow {
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+    padding: 4px;
+  }
+  .tg-addr-arrow svg { width: 28px; height: 10px; display: block; }
+
+  /* Value highlight */
+  .tg-value-block {
+    padding: 16px 20px 14px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+  .tg-value-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--color-text-muted);
+    margin-bottom: 6px;
+  }
+  .tg-value-display {
+    font-size: 26px;
+    font-weight: 800;
+    color: var(--color-primary, #6366f1);
+    letter-spacing: -0.02em;
+    font-family: ui-monospace, monospace;
+  }
+
+  /* Details grid */
+  .tg-details-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1px;
+    background: var(--color-border);
+    border-top: 1px solid var(--color-border);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .tg-detail-cell {
+    background: var(--color-surface);
+    padding: 12px 16px;
+  }
+  .tg-detail-label {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-muted);
+    margin-bottom: 4px;
+  }
+  .tg-detail-value {
+    font-size: 13px;
+    color: var(--color-text);
+  }
+  .tg-detail-value.bold { font-weight: 700; }
+  .tg-detail-value.mono { font-family: ui-monospace, monospace; font-size: 12px; }
+
+  /* Payload bytes */
+  .tg-payload-block {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .tg-hex-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 6px;
+  }
+  .tg-hex-byte {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 5px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    letter-spacing: 0.04em;
+  }
+  .tg-payload-empty {
+    font-size: 12px;
+    color: var(--color-text-muted);
+    font-style: italic;
+    margin-top: 4px;
+  }
+
+  /* Footer: GA flow button + nav */
+  .tg-modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    gap: 12px;
+  }
+
+  .tg-flow-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 7px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-hover);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-text-secondary);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .tg-flow-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+  .tg-flow-btn:hover {
+    border-color: var(--color-primary, #6366f1);
+    color: var(--color-primary, #6366f1);
+    background: rgba(99,102,241,.08);
+  }
+
+  .tg-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tg-nav-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 12px;
+    border-radius: 7px;
+    border: 1px solid var(--color-border);
+    background: transparent;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .tg-nav-btn svg { width: 14px; height: 14px; }
+  .tg-nav-btn:not(:disabled):hover { color: var(--color-text); border-color: var(--color-border-hover); }
+  .tg-nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .tg-nav-pos {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+    min-width: 50px;
+    text-align: center;
+  }
 </style>

@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import { getProtocolActivity, subscribeEvents } from '../lib/api.js';
   import { currentView } from '../stores/config.js';
-  import { selectedEventId } from '../stores/events.js';
+  import { selectedEventId, monitorTarget } from '../stores/events.js';
   import EventNode from '../components/EventNode.svelte';
 
   // ── State ──────────────────────────────────────────────
@@ -18,6 +18,9 @@
   let sentinel;
   let observer;
   let unsubSSE;
+
+  // Navigation target (from timeline click)
+  let highlightId = null;
 
   // Filter
   let filterEntity = '';
@@ -86,20 +89,32 @@
   function getZigbeeDetails(event) {
     try {
       const payload = JSON.parse(event.payload || '{}');
-      const attrs = (payload.new_state || payload)?.attributes || {};
+      const ns = payload.new_state || payload;
+      const attrs = ns?.attributes || {};
+      const stateVal = ns?.state;
       const details = [];
-      if (attrs.linkquality !== undefined) {
-        const lqi = Number(attrs.linkquality);
-        details.push({ key: 'LQI', val: `${lqi}/255`, type: lqi > 150 ? 'ok' : lqi > 80 ? 'warn' : 'bad' });
+
+      // Protocol quality (ZHA uses lqi, Z2M uses linkquality)
+      const lqi = attrs.lqi ?? attrs.linkquality;
+      if (lqi !== undefined) {
+        const n = Number(lqi);
+        details.push({ key: 'LQI', val: `${n}/255`, type: n > 150 ? 'ok' : n > 80 ? 'warn' : 'bad' });
       }
-      if (attrs.battery !== undefined) {
-        const bat = Number(attrs.battery);
-        details.push({ key: 'Battery', val: `${bat}%`, type: bat > 30 ? 'ok' : 'bad' });
+      const bat = attrs.battery ?? attrs.battery_level;
+      if (bat !== undefined) {
+        const n = Number(bat);
+        details.push({ key: 'Battery', val: `${n}%`, type: n > 30 ? 'ok' : 'bad' });
       }
-      if (attrs.temperature !== undefined) details.push({ key: 'Temp', val: `${attrs.temperature}°C`, type: 'info' });
-      if (attrs.humidity !== undefined) details.push({ key: 'Humidity', val: `${attrs.humidity}%`, type: 'info' });
-      const lux = attrs.illuminance_lux ?? attrs.illuminance;
-      if (lux !== undefined) details.push({ key: 'Lux', val: String(lux), type: 'info' });
+
+      // For HA sensors: value is in state, unit + device_class are in attributes
+      const unit = attrs.unit_of_measurement;
+      const dc = attrs.device_class;
+      if (unit && stateVal !== undefined && stateVal !== 'unavailable' && stateVal !== 'unknown') {
+        details.push({ key: dc || 'Value', val: `${stateVal} ${unit}`, type: 'info' });
+      } else if (dc && !unit && stateVal !== undefined && stateVal !== 'unavailable' && stateVal !== 'unknown') {
+        details.push({ key: dc, val: String(stateVal), type: 'info' });
+      }
+
       if (attrs.action) details.push({ key: 'Action', val: String(attrs.action), type: 'info' });
       if (attrs.occupancy !== undefined) details.push({ key: 'Occupancy', val: attrs.occupancy ? 'yes' : 'no', type: attrs.occupancy ? 'ok' : 'info' });
       if (attrs.contact !== undefined) details.push({ key: 'Contact', val: attrs.contact ? 'closed' : 'open', type: attrs.contact ? 'ok' : 'warn' });
@@ -138,7 +153,21 @@
   $: if (sentinel) setupObserver();
 
   onMount(async () => {
+    // Check if navigated here from timeline with a target event
+    const target = $monitorTarget;
+    if (target && target.view === 'zigbee') {
+      if (target.entityId) filterEntity = target.entityId;
+      highlightId = target.eventId || null;
+      monitorTarget.set(null);
+    }
     await loadEvents();
+    // After load, scroll to highlighted event
+    if (highlightId) {
+      setTimeout(() => {
+        const el = document.querySelector(`[data-event-id="${highlightId}"]`);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 300);
+    }
     unsubSSE = subscribeEvents(
       (event) => {
         const integ = (event.integration || '').toLowerCase();
@@ -249,11 +278,12 @@
       {:else}
         <ul class="event-list">
           {#each events as event (event.id)}
-            <li class="event-item">
+            <li class="event-item" class:highlighted={event.id === highlightId} data-event-id={event.id}>
               <EventNode
                 {event}
                 on:click={() => handleEventClick(event)}
                 on:viewin={(e) => { $currentView = e.detail; }}
+                on:integrationclick
               />
               {#if getZigbeeDetails(event).length > 0}
                 <div class="proto-details">
@@ -452,6 +482,12 @@
   }
   .event-item {
     animation: fadeIn 0.2s ease both;
+  }
+  .event-item.highlighted {
+    border-left: 3px solid var(--color-primary, #6366f1);
+    background: color-mix(in srgb, var(--color-primary, #6366f1) 8%, transparent);
+    border-radius: 4px;
+    outline: 1px solid color-mix(in srgb, var(--color-primary, #6366f1) 30%, transparent);
   }
   @keyframes fadeIn {
     from { opacity: 0; transform: translateY(4px); }

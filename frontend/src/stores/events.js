@@ -20,6 +20,7 @@ export const filters = writable({
   area: '',
   user_id: '',
   event_type: '',
+  integration: '',
   from: '',
   to: '',
   q: '',
@@ -46,10 +47,13 @@ export const selectedEntityTag = writable(null);
 // Domain tag selection (for domain history drill-down)
 export const selectedDomainTag = writable(null);
 
+// Monitor navigation target: { eventId, entityId, timestamp, view }
+export const monitorTarget = writable(null);
+
 // View history stack — so we can go back to filtered view after trace
 export const viewHistory = writable([]);
 
 // Derived: has active filters?
 export const hasActiveFilters = derived(filters, ($f) =>
-  Boolean($f.entity || $f.domain || $f.area || $f.user_id || $f.event_type || $f.q || $f.from || $f.to || $f.bookmarksOnly || $f.inferredOnly)
+  Boolean($f.entity || $f.domain || $f.area || $f.user_id || $f.event_type || $f.integration || $f.q || $f.from || $f.to || $f.bookmarksOnly || $f.inferredOnly)
 );
