@@ -85,6 +85,17 @@
     const s = n.state || '';
     return s === 'not_home' || s === 'off' || s === 'disconnected' || s === 'unavailable';
   }).length;
+
+  // Collapsible section state
+  let sectionOpen = {
+    network: true,
+    areas: true,
+    integrations: true,
+    domains: true,
+    unavailable: false,  // closed by default — can be 1000+ items
+    offline: true,
+  };
+  function toggleSection(key) { sectionOpen[key] = !sectionOpen[key]; sectionOpen = sectionOpen; }
 </script>
 
 <section class="health-view" aria-label="System Health">
@@ -214,7 +225,7 @@
     <!-- Network Devices (collapsible, compact) -->
     {#if networkDevices.length > 0}
       <div class="section-card">
-        <div class="section-header">
+        <button class="section-header" on:click={() => toggleSection('network')} aria-expanded={sectionOpen.network}>
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 10.55a7 7 0 019.08 0M5.53 12.61a3 3 0 013.95 0M8 15h.01M1 8.25a10 10 0 0114 0" /></svg>
             Network Devices
@@ -226,7 +237,9 @@
               {/if}
             </span>
           </h3>
-        </div>
+          <svg class="section-chevron" class:open={sectionOpen.network} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        {#if sectionOpen.network}
           <div class="network-table">
             <div class="net-table-head">
               <span class="nth-name">Device</span>
@@ -259,19 +272,22 @@
               </button>
             {/if}
           </div>
+        {/if}
       </div>
     {/if}
 
     <!-- Area Breakdown -->
     {#if sortedAreas.length > 0}
       <div class="section-card">
-        <div class="section-header">
+        <button class="section-header" on:click={() => toggleSection('areas')} aria-expanded={sectionOpen.areas}>
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 6l6-4 6 4v7a1 1 0 01-1 1H3a1 1 0 01-1-1V6z" /><path d="M6 14V8h4v6" /></svg>
             Areas
             <span class="section-count">{sortedAreas.length}</span>
           </h3>
-        </div>
+          <svg class="section-chevron" class:open={sectionOpen.areas} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        {#if sectionOpen.areas}
           <div class="area-grid">
             {#each sortedAreas as [name, count]}
               <div class="area-chip">
@@ -280,19 +296,22 @@
               </div>
             {/each}
           </div>
+        {/if}
       </div>
     {/if}
 
     <!-- Integrations Breakdown -->
     {#if sortedDeviceTypes.length > 0}
       <div class="section-card">
-        <div class="section-header">
+        <button class="section-header" on:click={() => toggleSection('integrations')} aria-expanded={sectionOpen.integrations}>
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1" y="3" width="14" height="10" rx="2" /><path d="M1 7h14" /></svg>
             Integrations Breakdown
             <span class="section-count">{sortedDeviceTypes.length}</span>
           </h3>
-        </div>
+          <svg class="section-chevron" class:open={sectionOpen.integrations} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        {#if sectionOpen.integrations}
           <div class="integration-list">
             {#each sortedDeviceTypes as [name, count]}
               <div class="integration-row">
@@ -304,19 +323,22 @@
               </div>
             {/each}
           </div>
+        {/if}
       </div>
     {/if}
 
     <!-- Domain Breakdown -->
     {#if sortedDomains.length > 0}
       <div class="section-card">
-        <div class="section-header">
+        <button class="section-header" on:click={() => toggleSection('domains')} aria-expanded={sectionOpen.domains}>
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4h8M4 8h8M4 12h5" /></svg>
             Domains
             <span class="section-count">{sortedDomains.length}</span>
           </h3>
-        </div>
+          <svg class="section-chevron" class:open={sectionOpen.domains} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        {#if sectionOpen.domains}
           <div class="domain-grid">
             {#each sortedDomains.slice(0, 30) as [name, count]}
               <div class="domain-chip">
@@ -326,19 +348,25 @@
               </div>
             {/each}
           </div>
+        {/if}
       </div>
     {/if}
 
     <!-- Unavailable Entities -->
     {#if data.unavailable.length > 0}
       <div class="section-card warn-card">
-        <div class="section-header">
+        <button class="section-header" on:click={() => toggleSection('unavailable')} aria-expanded={sectionOpen.unavailable}>
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 1L1 14h14L8 1zM8 6v4M8 12h.01" /></svg>
             Unavailable Entities
             <span class="section-count warn">{data.unavailable_count}</span>
+            {#if !sectionOpen.unavailable}
+              <span class="section-hint">click to expand</span>
+            {/if}
           </h3>
-        </div>
+          <svg class="section-chevron" class:open={sectionOpen.unavailable} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
+        </button>
+        {#if sectionOpen.unavailable}
           <div class="unavail-list">
             {#each data.unavailable as entity}
               <button class="unavail-row" on:click|stopPropagation={() => handleEntityClick(entity.entity_id)}>
@@ -359,12 +387,13 @@
               </button>
             {/each}
           </div>
+        {/if}
       </div>
     {/if}
 
     <!-- Offline History -->
     <div class="section-card">
-      <div class="section-header">
+      <button class="section-header" on:click={() => toggleSection('offline')} aria-expanded={sectionOpen.offline}>
         <h3 class="section-title">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="7" /><path d="M8 4v4l2.5 1.5" /></svg>
           Offline History
@@ -372,7 +401,9 @@
             <span class="section-count">{data.offline_periods.length}</span>
           {/if}
         </h3>
-      </div>
+        <svg class="section-chevron" class:open={sectionOpen.offline} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
+      </button>
+      {#if sectionOpen.offline}
         {#if data.offline_periods.length > 0}
           <div class="offline-list">
             {#each data.offline_periods as period}
@@ -398,6 +429,7 @@
         {:else}
           <p class="empty-note">No offline periods recorded.</p>
         {/if}
+      {/if}
     </div>
   {/if}
 </section>
@@ -499,9 +531,23 @@
 
   /* Section Header */
   .section-header {
-    display: flex; align-items: center;
+    display: flex; align-items: center; justify-content: space-between;
     padding: var(--sp-3) var(--sp-4);
     border-bottom: 1px solid var(--color-border);
+    width: 100%; cursor: pointer;
+    background: none; border-radius: 0; font: inherit; text-align: left;
+    transition: background 0.15s;
+  }
+  .section-header:hover { background: var(--color-surface-hover, rgba(255,255,255,0.03)); }
+  .section-header[aria-expanded="false"] { border-bottom-color: transparent; }
+  .section-chevron {
+    width: 16px; height: 16px; color: var(--color-text-muted); flex-shrink: 0;
+    transition: transform 0.2s ease; transform: rotate(0deg);
+  }
+  .section-chevron.open { transform: rotate(180deg); }
+  .section-hint {
+    font-size: var(--text-2xs); color: var(--color-text-muted); font-weight: 400;
+    margin-left: var(--sp-1); opacity: 0.7;
   }
   .section-title {
     display: flex; align-items: center; gap: var(--sp-2);

@@ -8,7 +8,7 @@ import json
 import logging
 import os
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -66,6 +66,15 @@ _sensor_counts: dict[str, list[float]] = defaultdict(list)
 # Event processing queue (back-pressure at 10 000 items)
 _event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10_000)
 _processor_task: asyncio.Task[None] | None = None
+
+# KNX diagnostics — track recent raw events for debugging
+_knx_diag: dict[str, Any] = {
+    "received": 0,
+    "stored": 0,
+    "dropped_no_ga": 0,
+    "last_error": None,
+    "recent_raw": deque(maxlen=10),  # last 10 raw knx_event data dicts
+}
 
 
 # ─── Rate-limiter middleware ─────────────────────────────
@@ -420,6 +429,17 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
     time_fired = raw_event.get("time_fired")
     timestamp_ms = _knx_epoch_ms(time_fired)
 
+    _knx_diag["received"] += 1
+    # Keep last 10 raw data dicts for diagnostics (strip large blobs)
+    _knx_diag["recent_raw"].append({
+        "data_keys": list(data.keys()),
+        "destination": data.get("destination"),
+        "source": data.get("source"),
+        "direction": data.get("direction"),
+        "telegramtype": data.get("telegramtype"),
+        "time_fired": time_fired,
+    })
+
     # HA KNX integration fires knx_event with "destination" (not "destination_address")
     ga = (
         data.get("destination")
@@ -428,7 +448,11 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
         or ""
     )
     if not ga:
+        _knx_diag["dropped_no_ga"] += 1
+        logger.warning("knx.dropped_no_ga", data_keys=list(data.keys()), raw_data=data)
         return
+
+    logger.info("knx.received", ga=ga, direction=data.get("direction"), type=data.get("telegramtype"))
 
     telegram_type = data.get("telegramtype") or data.get("telegram_type") or "Unknown"
     direction = data.get("direction", "Incoming")
@@ -462,14 +486,17 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
         "telegram_type": telegram_type,
         "raw_data": raw_hex,
         "decoded_value": decoded_str,
-        "dpt_type": None,
+        "dpt_type": data.get("dpt_name"),  # HA field is dpt_name
         "linked_entity_id": linked_entity,
         "linked_event_id": None,
         "context_id": context.get("id"),
     }
     try:
         await storage.insert_knx_telegram(telegram)
-    except Exception:
+        _knx_diag["stored"] += 1
+        logger.info("knx.stored", ga=ga, id=telegram_id)
+    except Exception as exc:
+        _knx_diag["last_error"] = str(exc)
         logger.exception("knx.insert_error", ga=ga)
         return
 
@@ -1016,6 +1043,19 @@ async def api_knx_stream(request: Request) -> StreamingResponse:
             knx_sse_clients.discard(queue)
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@app.get("/api/knx/diagnostics")
+async def api_knx_diagnostics() -> dict[str, Any]:
+    """Return KNX event ingestion diagnostics for debugging."""
+    return {
+        "received": _knx_diag["received"],
+        "stored": _knx_diag["stored"],
+        "dropped_no_ga": _knx_diag["dropped_no_ga"],
+        "last_error": _knx_diag["last_error"],
+        "recent_raw_events": list(_knx_diag["recent_raw"]),
+        "ws_connected": ha_client.connected if ha_client else False,
+    }
 
 
 @app.get("/api/knx/group-addresses")

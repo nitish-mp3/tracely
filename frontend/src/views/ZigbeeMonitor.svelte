@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { getProtocolActivity, subscribeEvents } from '../lib/api.js';
-  import { currentView } from '../stores/config.js';
+  import { currentView, addToast } from '../stores/config.js';
   import { selectedEventId, monitorTarget } from '../stores/events.js';
   import EventNode from '../components/EventNode.svelte';
 
@@ -172,8 +172,10 @@
   }
 
   function handleEventClick(event) {
+    if (!event) return;
     $selectedEventId = event.id;
     $currentView = 'trace';
+    addToast('Opening trace view…', 'info', 2000);
   }
 
   function getZigbeeDetails(event) {
@@ -381,7 +383,8 @@
               <EventNode
                 {event}
                 on:viewin={(e) => { $currentView = e.detail; }}
-                on:integrationclick
+                on:tagclick={(e) => { filterEntity = e.detail; applyFilters(); addToast(`Filtered by entity: ${e.detail}`, 'info', 2500); }}
+                on:integrationclick={(e) => { const p = PROTOCOLS.find(x => x.value === e.detail); if (p) { protocol = e.detail; applyFilters(); addToast(`Switched to ${p.label}`, 'info', 2000); } else { addToast(`Integration: ${e.detail}`, 'info', 2000); } }}
               />
               {#if getZigbeeDetails(event).length > 0}
                 <div class="proto-details">
@@ -479,7 +482,7 @@
 
     <!-- Footer: trace + navigation -->
     <div class="zb-modal-footer">
-      <button class="zb-trace-btn" on:click={() => { closeEventDetail(); handleEventClick(selectedZigbeeEvent); }}>
+      <button class="zb-trace-btn" on:click={() => { const ev = selectedZigbeeEvent; closeEventDetail(); handleEventClick(ev); }}>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
           <path d="M3 8h10M9 4l4 4-4 4"/>
         </svg>

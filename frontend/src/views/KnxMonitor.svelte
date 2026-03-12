@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
   import { getKnxTelegrams, getKnxGroupAddresses, getKnxFlow, subscribeKnxEvents, getKnxActivity, subscribeEvents } from '../lib/api.js';
-  import { currentView } from '../stores/config.js';
+  import { currentView, addToast } from '../stores/config.js';
   import { selectedEventId, monitorTarget } from '../stores/events.js';
   import EventNode from '../components/EventNode.svelte';
 
@@ -418,6 +418,10 @@
           <span class="chip-label">↑ Out</span>
           <span class="chip-value">{outgoing}</span>
         </div>
+        <a class="chip chip-diag" href="/api/knx/diagnostics" target="_blank" rel="noopener" title="View KNX ingestion diagnostics in a new tab">
+          <span class="chip-label">Diagnostics</span>
+          <span class="chip-value">↗</span>
+        </a>
       </div>
     </div>
 
@@ -479,7 +483,7 @@
             <path d="M14 24h20M24 14v20"/>
           </svg>
           <p>No KNX telegrams yet.</p>
-          <span>Telegrams will appear here as KNX activity occurs on the bus.</span>
+          <span>Telegrams appear after the addon backend is restarted with the latest code. Check the <a class="diag-link" href="/api/knx/diagnostics" target="_blank" rel="noopener">Diagnostics</a> chip above to verify events are being received.</span>
         </div>
       {:else}
         <table class="tg-table" aria-label="KNX Telegrams">
@@ -528,9 +532,10 @@
                 <td class="col-source">{tg.source_address ?? '—'}</td>
                 <td class="col-entity">
                   {#if tg.linked_entity_id}
-                    <span class="entity-link" title={tg.linked_entity_id}>
+                    <button class="entity-link" title="Filter by {tg.linked_entity_id}"
+                      on:click|stopPropagation={() => { filterEntity = tg.linked_entity_id; applyFilters(); addToast(`Filtered by entity`, 'info', 2000); }}>
                       {tg.linked_entity_id.split('.').pop()}
-                    </span>
+                    </button>
                   {:else}
                     <span class="dim">—</span>
                   {/if}
@@ -584,7 +589,8 @@
                 {event}
                 on:click={() => handleActivityEventClick(event)}
                 on:viewin={(e) => { $currentView = e.detail; }}
-                on:integrationclick
+                on:tagclick={(e) => { filterEntity = e.detail; applyFilters(); addToast(`Filtered by entity: ${e.detail}`, 'info', 2500); }}
+                on:integrationclick={(e) => addToast(`Integration filter: ${e.detail}`, 'info', 2000)}
               />
               {#if getKnxDetails(event).length > 0}
                 <div class="proto-details">
@@ -710,7 +716,7 @@
       </div>
       <div class="tg-detail-cell">
         <div class="tg-detail-label">DPT</div>
-        <div class="tg-detail-value bold">{selectedTelegram.dpt ?? '—'}</div>
+        <div class="tg-detail-value bold">{selectedTelegram.dpt_type ?? '—'}</div>
       </div>
       {#if selectedTelegram.linked_entity_id}
         <div class="tg-detail-cell" style="grid-column: 1/-1">
@@ -958,6 +964,10 @@
   .chip-in .chip-value  { color: #22c55e; }
   .chip-out .chip-value { color: #6366f1; }
   .chip-ga .chip-value  { color: var(--color-accent, #6366f1); }
+  .chip-diag { text-decoration: none; cursor: pointer; }
+  .chip-diag:hover { background: var(--color-surface-hover); }
+  .chip-diag .chip-value { color: var(--color-text-muted); }
+  a.diag-link { color: var(--color-accent, #6366f1); text-underline-offset: 2px; }
 
   /* ── Filter bar ─────────────────────────────── */
   .filter-bar {
@@ -1141,7 +1151,15 @@
     font-size: 11.5px;
     color: var(--color-accent, #6366f1);
     font-family: ui-monospace, monospace;
+    background: none;
+    border: none;
+    padding: 2px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    transition: background 0.15s;
   }
+  .entity-link:hover { background: var(--color-accent-dim, rgba(99,102,241,0.12)); }
 
   .raw-bytes {
     font-family: ui-monospace, monospace;
