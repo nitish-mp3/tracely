@@ -710,7 +710,7 @@
       </div>
       <div class="tg-detail-cell">
         <div class="tg-detail-label">DPT</div>
-        <div class="tg-detail-value bold">{selectedTelegram.dpt ?? 'DPT'}</div>
+        <div class="tg-detail-value bold">{selectedTelegram.dpt ?? '—'}</div>
       </div>
       {#if selectedTelegram.linked_entity_id}
         <div class="tg-detail-cell" style="grid-column: 1/-1">
@@ -860,6 +860,8 @@
 <style>
   /* ── Layout ─────────────────────────────────── */
   .knx-layout {
+    flex: 1;
+    min-width: 0;
     display: flex;
     height: 100%;
     overflow: hidden;
@@ -1821,5 +1823,105 @@
     font-variant-numeric: tabular-nums;
     min-width: 50px;
     text-align: center;
+  }
+
+  /* ── Mobile responsive ──────────────────────── */
+  @media (max-width: 768px) {
+    /* Stack layout: hide sidebar by default on mobile */
+    .knx-layout {
+      flex-direction: column;
+    }
+    .ga-sidebar {
+      width: 100%;
+      max-height: 200px;
+      border-right: none;
+      border-top: 1px solid var(--color-border);
+      flex-shrink: 0;
+    }
+    .ga-list {
+      display: flex;
+      flex-direction: row;
+      flex-wrap: nowrap;
+      overflow-x: auto;
+      padding: 6px;
+      gap: 6px;
+    }
+    .ga-row {
+      min-width: 120px;
+      flex-shrink: 0;
+      margin-bottom: 0;
+    }
+    /* Filter bar wraps */
+    .filter-row {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .filter-group {
+      flex: 1 1 140px;
+    }
+    /* Summary chips scroll */
+    .summary-chips {
+      overflow-x: auto;
+      flex-wrap: nowrap;
+      padding-bottom: 2px;
+    }
+    .chip {
+      flex-shrink: 0;
+    }
+    /* Panel header wraps */
+    .panel-header {
+      flex-wrap: wrap;
+    }
+    /* Cols hidden on mobile: entity + raw */
+    .tg-table .col-entity,
+    .tg-table thead th:nth-child(7),
+    .tg-table .col-raw,
+    .tg-table thead th:nth-child(8) {
+      display: none;
+    }
+    /* Telegram modal: full-screen on mobile */
+    .tg-modal {
+      width: 100%;
+      max-width: 100%;
+      height: 100%;
+      top: 0;
+      left: 0;
+      transform: none;
+      border-radius: 0;
+    }
+    @keyframes modal-in {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .tg-modal-header-right {
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .tg-modal-time { display: none; }
+    .tg-addr-value { font-size: 16px; }
+    .tg-value-display { font-size: 22px; }
+    .tg-modal-footer {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .tg-flow-btn { justify-content: center; }
+    .tg-nav { justify-content: center; }
+  }
+
+  @media (max-width: 480px) {
+    .panel-header {
+      padding: 10px 12px 8px;
+    }
+    .tab-switcher { order: -1; width: 100%; }
+    .tab-btn { flex: 1; justify-content: center; }
+    .filter-bar { padding: 8px 12px; }
+    .table-wrapper { font-size: 11.5px; }
+    .tg-row td { padding: 6px 8px; }
+    .tg-table thead th { padding: 6px 8px; }
+    /* Also hide source col on very small phones */
+    .tg-table .col-source,
+    .tg-table thead th:nth-child(6) {
+      display: none;
+    }
   }
 </style>

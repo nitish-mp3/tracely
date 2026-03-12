@@ -22,6 +22,96 @@
   // Navigation target (from timeline click)
   let highlightId = null;
 
+  // ── Event detail modal ──────────────────────────────
+  let selectedZigbeeEvent = null;
+  $: selectedEventIndex = selectedZigbeeEvent
+    ? events.findIndex(e => e.id === selectedZigbeeEvent.id)
+    : -1;
+
+  function openEventDetail(ev) { selectedZigbeeEvent = ev; }
+  function closeEventDetail() { selectedZigbeeEvent = null; }
+  function prevEvent() {
+    if (selectedEventIndex > 0) selectedZigbeeEvent = events[selectedEventIndex - 1];
+  }
+  function nextEvent() {
+    if (selectedEventIndex < events.length - 1) selectedZigbeeEvent = events[selectedEventIndex + 1];
+  }
+
+  function timeAgo(iso) {
+    if (!iso) return '';
+    const diff = Date.now() - new Date(iso).getTime();
+    if (diff < 60000) return `${Math.round(diff / 1000)}s ago`;
+    if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
+    if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
+    return `${Math.floor(diff / 86400000)}d ago`;
+  }
+
+  function fmtDateTime(iso) {
+    if (!iso) return '—';
+    try {
+      return new Date(iso).toLocaleString([], {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit',
+      });
+    } catch { return iso; }
+  }
+
+  function formatAttrVal(key, val) {
+    if (typeof val === 'boolean') return val ? 'Yes' : 'No';
+    if (key === 'battery' || key === 'battery_level') return `${val}%`;
+    if (key === 'lqi' || key === 'linkquality') return `${Number(val)}/255`;
+    if (key === 'temperature') return `${val} °C`;
+    if (key === 'humidity') return `${val} %`;
+    if (key === 'pressure') return `${val} hPa`;
+    if (key === 'illuminance' || key === 'illuminance_lux') return `${val} lx`;
+    if (typeof val === 'object' && val !== null) return JSON.stringify(val);
+    return String(val);
+  }
+
+  function getEventFullDetails(ev) {
+    try {
+      const payload = JSON.parse(ev.payload || '{}');
+      const ns = payload.new_state || payload;
+      const os = payload.old_state || null;
+      const attrs = ns?.attributes || {};
+      const SKIP = new Set([
+        'friendly_name', 'icon', 'supported_features', 'supported_color_modes',
+        'entity_picture', 'attribution', 'restored', 'assumed_state',
+        'color_mode', 'hs_color', 'rgb_color', 'xy_color', 'min_mireds',
+        'max_mireds', 'effect_list',
+      ]);
+      const PRIORITY = [
+        'battery', 'battery_level', 'lqi', 'linkquality',
+        'temperature', 'humidity', 'pressure', 'co2', 'voc', 'pm25', 'pm10',
+        'illuminance', 'illuminance_lux', 'occupancy', 'contact', 'action',
+        'brightness', 'color_temp', 'device_class', 'unit_of_measurement',
+      ];
+      const shown = new Set();
+      const details = [];
+      for (const key of PRIORITY) {
+        if (attrs[key] !== undefined && !shown.has(key)) {
+          shown.add(key);
+          details.push({ key, val: formatAttrVal(key, attrs[key]) });
+        }
+      }
+      for (const [key, val] of Object.entries(attrs)) {
+        if (!shown.has(key) && !SKIP.has(key) && val !== null && val !== undefined) {
+          shown.add(key);
+          details.push({ key, val: formatAttrVal(key, val) });
+        }
+      }
+      return {
+        newVal: ns?.state ?? null,
+        oldVal: os?.state ?? null,
+        unit: attrs.unit_of_measurement || '',
+        deviceClass: attrs.device_class || '',
+        friendlyName: attrs.friendly_name || ev.name || ev.entity_id,
+        details,
+      };
+    } catch {
+      return { newVal: null, oldVal: null, unit: '', deviceClass: '', friendlyName: '', details: [] };
+    }
+  }
+
   // Filter
   let filterEntity = '';
   let fromDate = '';
@@ -278,10 +368,18 @@
       {:else}
         <ul class="event-list">
           {#each events as event (event.id)}
-            <li class="event-item" class:highlighted={event.id === highlightId} data-event-id={event.id}>
+            <li
+              class="event-item"
+              class:highlighted={event.id === highlightId}
+              data-event-id={event.id}
+              on:click={() => openEventDetail(event)}
+              on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && openEventDetail(event)}
+              role="button"
+              tabindex="0"
+              aria-label="View details for {event.entity_id}"
+            >
               <EventNode
                 {event}
-                on:click={() => handleEventClick(event)}
                 on:viewin={(e) => { $currentView = e.detail; }}
                 on:integrationclick
               />
@@ -311,8 +409,101 @@
 
 </div>
 
+<!-- ── Zigbee Event Detail Modal ─────────────── -->
+{#if selectedZigbeeEvent}
+  <!-- svelte-ignore a11y-click-events-have-key-events -->
+  <div class="zb-overlay" on:click={closeEventDetail} role="button" tabindex="0" aria-label="Close" />
+  <div class="zb-modal" role="dialog" aria-label="Zigbee event detail">
+
+    <!-- Header -->
+    <div class="zb-modal-header">
+      <div class="zb-modal-title-group">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <path d="M2 4l6-2 6 2M2 8l6 2 6-2M2 12l6 2 6-2"/>
+        </svg>
+        <div>
+          <div class="zb-modal-title">{getEventFullDetails(selectedZigbeeEvent).friendlyName}</div>
+          <div class="zb-modal-entity">{selectedZigbeeEvent.entity_id}</div>
+        </div>
+      </div>
+      <div class="zb-modal-header-right">
+        <div class="zb-modal-meta">
+          <span class="zb-modal-time">{fmtDateTime(selectedZigbeeEvent.timestamp)}</span>
+          <span class="zb-modal-ago">{timeAgo(selectedZigbeeEvent.timestamp)}</span>
+        </div>
+        {#if selectedZigbeeEvent.integration}
+          <span class="zb-integ-pill">{selectedZigbeeEvent.integration}</span>
+        {/if}
+        <button class="zb-close-btn" on:click={closeEventDetail} aria-label="Close">
+          <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2l8 8M10 2l-8 8"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- State change row -->
+    {#if getEventFullDetails(selectedZigbeeEvent).newVal !== null}
+      {@const dets = getEventFullDetails(selectedZigbeeEvent)}
+      <div class="zb-state-row">
+        {#if dets.oldVal !== null && dets.oldVal !== dets.newVal}
+          <div class="zb-state-block">
+            <div class="zb-state-label">Previous</div>
+            <div class="zb-state-val old">{dets.oldVal}{dets.unit ? ' ' + dets.unit : ''}</div>
+          </div>
+          <div class="zb-state-arrow">
+            <svg viewBox="0 0 24 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+              <path d="M0 4h20M16 1l4 3-4 3"/>
+            </svg>
+          </div>
+        {/if}
+        <div class="zb-state-block main">
+          <div class="zb-state-label">Current{dets.deviceClass ? ' · ' + dets.deviceClass : ''}</div>
+          <div class="zb-state-val current">{dets.newVal}{dets.unit ? ' ' + dets.unit : ''}</div>
+        </div>
+      </div>
+    {/if}
+
+    <!-- Attributes grid -->
+    {#if getEventFullDetails(selectedZigbeeEvent).details.length > 0}
+      <div class="zb-attrs-block">
+        <div class="zb-section-label">Attributes</div>
+        <div class="zb-attrs-grid">
+          {#each getEventFullDetails(selectedZigbeeEvent).details as d}
+            <div class="zb-attr-cell">
+              <div class="zb-attr-key">{d.key.replace(/_/g, ' ')}</div>
+              <div class="zb-attr-val">{d.val}</div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- Footer: trace + navigation -->
+    <div class="zb-modal-footer">
+      <button class="zb-trace-btn" on:click={() => { closeEventDetail(); handleEventClick(selectedZigbeeEvent); }}>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <path d="M3 8h10M9 4l4 4-4 4"/>
+        </svg>
+        View Trace
+      </button>
+      <div class="zb-nav">
+        <button class="zb-nav-btn" disabled={selectedEventIndex <= 0} on:click={prevEvent} aria-label="Previous">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M10 4l-5 4 5 4"/></svg>
+          Prev
+        </button>
+        <span class="zb-nav-pos">{selectedEventIndex + 1} / {events.length}</span>
+        <button class="zb-nav-btn" disabled={selectedEventIndex >= events.length - 1} on:click={nextEvent} aria-label="Next">
+          Next
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 4l5 4-5 4"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .zigbee-layout {
+    flex: 1;
+    min-width: 0;
     display: flex;
     height: 100%;
     overflow: hidden;
@@ -482,6 +673,12 @@
   }
   .event-item {
     animation: fadeIn 0.2s ease both;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background 0.08s;
+  }
+  .event-item:hover {
+    background: var(--color-surface-hover);
   }
   .event-item.highlighted {
     border-left: 3px solid var(--color-primary, #6366f1);
@@ -545,5 +742,306 @@
   .chip-domain {
     background: var(--color-surface-hover);
     border-color: var(--color-border);
+  }
+
+  /* ── Zigbee detail modal ─────────────────────── */
+  .zb-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    backdrop-filter: blur(2px);
+    z-index: 200;
+  }
+
+  .zb-modal {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(520px, 95vw);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 14px;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.35);
+    z-index: 201;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: zb-modal-in 0.18s ease;
+  }
+
+  @keyframes zb-modal-in {
+    from { opacity: 0; transform: translate(-50%, calc(-50% + 12px)); }
+    to   { opacity: 1; transform: translate(-50%, -50%); }
+  }
+
+  .zb-modal-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 16px 18px 14px;
+    border-bottom: 1px solid var(--color-border);
+    gap: 12px;
+  }
+
+  .zb-modal-title-group {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    min-width: 0;
+  }
+  .zb-modal-title-group svg {
+    width: 18px; height: 18px;
+    color: #22c55e;
+    flex-shrink: 0;
+    margin-top: 3px;
+  }
+
+  .zb-modal-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--color-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .zb-modal-entity {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-family: ui-monospace, monospace;
+    margin-top: 2px;
+    word-break: break-all;
+  }
+
+  .zb-modal-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .zb-modal-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 1px;
+  }
+  .zb-modal-time {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .zb-modal-ago {
+    font-size: 10px;
+    color: var(--color-text-muted);
+    opacity: 0.7;
+  }
+
+  .zb-integ-pill {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: rgba(34,197,94,.13);
+    color: #4ade80;
+    white-space: nowrap;
+  }
+
+  .zb-close-btn {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    background: transparent;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--color-text-muted);
+    transition: color 0.15s, background 0.12s;
+    flex-shrink: 0;
+  }
+  .zb-close-btn svg { width: 12px; height: 12px; }
+  .zb-close-btn:hover { color: var(--color-text); background: var(--color-bg); }
+
+  /* State change row */
+  .zb-state-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 20px 14px;
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-bg);
+  }
+
+  .zb-state-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .zb-state-block.main { flex: 1; }
+
+  .zb-state-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--color-text-muted);
+  }
+
+  .zb-state-val {
+    font-size: 22px;
+    font-weight: 800;
+    font-family: ui-monospace, monospace;
+    letter-spacing: -0.02em;
+    color: var(--color-text-muted);
+  }
+  .zb-state-val.old {
+    color: var(--color-text-muted);
+    font-size: 18px;
+    font-weight: 600;
+    text-decoration: line-through;
+    opacity: 0.6;
+  }
+  .zb-state-val.current {
+    color: #22c55e;
+  }
+
+  .zb-state-arrow {
+    flex-shrink: 0;
+    color: var(--color-text-muted);
+    padding: 4px;
+  }
+  .zb-state-arrow svg { width: 28px; height: 10px; display: block; }
+
+  /* Attributes grid */
+  .zb-attrs-block {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .zb-section-label {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--color-text-muted);
+    margin-bottom: 10px;
+  }
+  .zb-attrs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 8px;
+  }
+  .zb-attr-cell {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    padding: 8px 12px;
+  }
+  .zb-attr-key {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: capitalize;
+    color: var(--color-text-muted);
+    letter-spacing: 0.02em;
+    margin-bottom: 3px;
+  }
+  .zb-attr-val {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--color-text);
+    font-family: ui-monospace, monospace;
+    word-break: break-word;
+  }
+
+  /* Footer */
+  .zb-modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    gap: 12px;
+  }
+
+  .zb-trace-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    background: rgba(34,197,94,.12);
+    border: 1px solid rgba(34,197,94,.3);
+    color: #4ade80;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .zb-trace-btn svg { width: 14px; height: 14px; }
+  .zb-trace-btn:hover { background: rgba(34,197,94,.2); }
+
+  .zb-nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .zb-nav-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    background: transparent;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    cursor: pointer;
+    transition: all 0.12s;
+  }
+  .zb-nav-btn svg { width: 14px; height: 14px; }
+  .zb-nav-btn:not(:disabled):hover { color: var(--color-text); border-color: var(--color-border-hover); }
+  .zb-nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .zb-nav-pos {
+    font-size: 11px;
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+    min-width: 50px;
+    text-align: center;
+  }
+
+  /* ── Mobile responsive ──────────────────────── */
+  @media (max-width: 640px) {
+    .filter-row {
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .filter-group {
+      flex: 1 1 140px;
+    }
+    .summary-chips {
+      overflow-x: auto;
+      flex-wrap: nowrap;
+      padding-bottom: 2px;
+    }
+    .chip { flex-shrink: 0; }
+    .panel-header { flex-wrap: wrap; gap: 10px; }
+    .protocol-selector { width: 100%; justify-content: stretch; }
+    .protocol-btn { flex: 1; text-align: center; }
+    .zb-modal {
+      width: 100%;
+      max-width: 100%;
+      height: 100%;
+      top: 0; left: 0;
+      transform: none;
+      border-radius: 0;
+    }
+    @keyframes zb-modal-in {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .zb-modal-time, .zb-modal-ago { display: none; }
+    .zb-attrs-grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+    .zb-modal-footer { flex-direction: column; align-items: stretch; }
+    .zb-trace-btn { justify-content: center; }
+    .zb-nav { justify-content: center; }
   }
 </style>

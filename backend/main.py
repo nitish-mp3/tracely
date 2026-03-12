@@ -420,13 +420,19 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
     time_fired = raw_event.get("time_fired")
     timestamp_ms = _knx_epoch_ms(time_fired)
 
-    ga = data.get("destination_address") or data.get("group_address") or ""
+    # HA KNX integration fires knx_event with "destination" (not "destination_address")
+    ga = (
+        data.get("destination")
+        or data.get("destination_address")
+        or data.get("group_address")
+        or ""
+    )
     if not ga:
         return
 
     telegram_type = data.get("telegramtype") or data.get("telegram_type") or "Unknown"
     direction = data.get("direction", "Incoming")
-    source = data.get("source_address") or data.get("source")
+    source = data.get("source") or data.get("source_address")
 
     # Raw bytes → hex string
     raw = data.get("data")

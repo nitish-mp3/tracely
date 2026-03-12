@@ -490,4 +490,20 @@
       gap: var(--sp-2);
     }
   }
+
+  @media (max-width: 380px) {
+    /* On tiny phones: hide nav text labels, show only icons */
+    .nav-pill {
+      padding: 6px;
+      gap: 0;
+      font-size: 0; /* hides text node */
+    }
+    .nav-icon {
+      width: 16px;
+      height: 16px;
+    }
+    .status-chip {
+      display: none;
+    }
+  }
 </style>

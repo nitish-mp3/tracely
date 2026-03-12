@@ -404,10 +404,22 @@
 
 <style>
   .health-view {
-    flex: 1; display: flex; flex-direction: column; gap: var(--sp-4);
-    padding: var(--sp-6); overflow-y: auto; max-width: 1000px;
-    margin: 0 auto; width: 100%;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-4);
+    padding: var(--sp-6);
+    overflow-y: auto;
+    max-width: 1000px;
+    margin: 0 auto;
+    width: 100%;
     animation: fadeIn var(--duration-normal) var(--ease-out);
+  }
+  /* Prevent flex children from collapsing (section-card has overflow:hidden which disables min-height:auto) */
+  .health-view > * {
+    flex-shrink: 0;
   }
 
   .loading-state, .error-state {
