@@ -217,6 +217,7 @@ class Storage:
         event_type: str | None = None,
         from_ts: int | None = None,
         to_ts: int | None = None,
+        integration: str | None = None,
     ) -> tuple[list[dict[str, Any]], int]:
         """Paginated event query with optional filters."""
         assert self._db is not None
@@ -238,6 +239,9 @@ class Storage:
         if event_type:
             conditions.append("event_type = ?")
             params.append(event_type)
+        if integration:
+            conditions.append("integration = ?")
+            params.append(integration)
         if from_ts is not None:
             conditions.append("timestamp >= ?")
             params.append(from_ts)

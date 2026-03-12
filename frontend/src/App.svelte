@@ -6,6 +6,7 @@
   import Stats from './views/Stats.svelte';
   import SystemHealth from './views/SystemHealth.svelte';
   import KnxMonitor from './views/KnxMonitor.svelte';
+  import ZigbeeMonitor from './views/ZigbeeMonitor.svelte';
   import Toast from './components/Toast.svelte';
   import { currentView, filtersOpen, healthStatus, addToast } from './stores/config.js';
   import { filters, hasActiveFilters, viewHistory } from './stores/events.js';
@@ -135,6 +136,16 @@
           </svg>
           KNX
         </button>
+        <button
+          class="nav-pill zigbee-pill"
+          class:active={$currentView === 'zigbee'}
+          on:click={() => handleNav('zigbee')}
+        >
+          <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <path d="M2 4l6-2 6 2M2 8l6 2 6-2M2 12l6 2 6-2"/>
+          </svg>
+          Zigbee
+        </button>
       </nav>
     </div>
 
@@ -197,6 +208,8 @@
       <SystemHealth />
     {:else if $currentView === 'knx'}
       <KnxMonitor />
+    {:else if $currentView === 'zigbee'}
+      <ZigbeeMonitor />
     {/if}
   </main>
 
@@ -295,6 +308,9 @@
   }
   .nav-pill.knx-pill.active {
     color: #818cf8;
+  }
+  .nav-pill.zigbee-pill.active {
+    color: #22c55e;
   }
   .nav-icon {
     width: 14px;

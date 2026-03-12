@@ -52,6 +52,7 @@ normalizer = Normalizer(entity_map)
 tree_builder = TreeBuilder(storage, settings)
 purge_manager = PurgeManager(storage, settings)
 ha_client: HAClient | None = None
+_start_time: float = time.time()
 
 # SSE clients — general events
 sse_clients: set[asyncio.Queue[str]] = set()
@@ -806,20 +807,32 @@ async def api_stats() -> dict[str, Any]:
 
 @app.get("/api/system")
 async def api_system_health() -> dict[str, Any]:
-    """System health: unavailable entities, device breakdown, offline periods."""
+    """System health: network, entities, integrations, areas, offline periods."""
     entities = entity_map.all_entities() if entity_map else []
 
     unavailable = []
     device_types: dict[str, int] = {}
+    domain_counts: dict[str, int] = {}
+    area_counts: dict[str, int] = {}
     total_devices = 0
+    network_info: list[dict[str, Any]] = []
+
     for e in entities:
         eid = e.entity_id
         integration = e.integration or ""
         domain = e.domain or (eid.split(".")[0] if "." in eid else "")
         state = e.attributes.get("state", "")
+        attrs = e.attributes
+
         if integration:
             device_types[integration] = device_types.get(integration, 0) + 1
+        if domain:
+            domain_counts[domain] = domain_counts.get(domain, 0) + 1
+        area = e.area or ""
+        if area:
+            area_counts[area] = area_counts.get(area, 0) + 1
         total_devices += 1
+
         if state in ("unavailable", "unknown"):
             unavailable.append({
                 "entity_id": eid,
@@ -827,7 +840,24 @@ async def api_system_health() -> dict[str, Any]:
                 "state": state,
                 "domain": domain,
                 "integration": integration,
-                "area": e.area or "",
+                "area": area,
+            })
+
+        # Extract network info from relevant entities
+        ip_addr = attrs.get("ip_address") or attrs.get("ip")
+        mac_addr = attrs.get("mac_address") or attrs.get("mac")
+        ssid = attrs.get("ssid") or attrs.get("wifi_ssid")
+        signal = attrs.get("signal_strength") or attrs.get("wifi_signal")
+        if ip_addr or mac_addr or ssid:
+            network_info.append({
+                "entity_id": eid,
+                "friendly_name": e.friendly_name or eid,
+                "ip_address": ip_addr,
+                "mac_address": mac_addr,
+                "ssid": ssid,
+                "signal_strength": signal,
+                "state": state,
+                "integration": integration,
             })
 
     # Compute offline periods from HA start/stop events
@@ -844,7 +874,6 @@ async def api_system_health() -> dict[str, Any]:
         stop_times = sorted([r["timestamp"] for r in stop_rows], reverse=True)
         start_times = sorted([r["timestamp"] for r in start_rows], reverse=True)
         for st in stop_times:
-            # Find the next start after this stop
             resumed = next((s for s in start_times if s > st), None)
             offline_periods.append({
                 "stopped_at": st,
@@ -854,14 +883,31 @@ async def api_system_health() -> dict[str, Any]:
     except Exception:
         pass
 
+    # DB stats
+    db_size = 0
+    event_count = 0
+    try:
+        db_size = await storage.get_db_size()
+        event_count = await storage.get_event_count()
+    except Exception:
+        pass
+
     ws_connected = ha_client.connected if ha_client else False
+    uptime_s = int(time.time() - _start_time) if _start_time else 0
+
     return {
         "ws_connected": ws_connected,
         "total_entities": total_devices,
         "unavailable": unavailable,
         "unavailable_count": len(unavailable),
         "device_types": device_types,
+        "domain_counts": domain_counts,
+        "area_counts": area_counts,
+        "network_info": network_info,
         "offline_periods": offline_periods[:20],
+        "db_size_bytes": db_size,
+        "events_count": event_count,
+        "uptime_seconds": uptime_s,
     }
 
 
@@ -967,6 +1013,55 @@ async def api_knx_flow(
         window_ms=window_ms,
         knx_telegrams=[_knx_to_response(r) for r in knx_rows],
         ha_events=[_to_response(r) for r in ha_rows],
+    )
+
+
+@app.get("/api/knx/activity")
+async def api_knx_activity(
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=500),
+    entity: str | None = Query(None),
+) -> PaginatedEvents:
+    """KNX entity state changes from the events table (integration = knx)."""
+    from_str = request.query_params.get("from")
+    to_str = request.query_params.get("to")
+    from_ts = _parse_timestamp(from_str)
+    to_ts = _parse_timestamp(to_str)
+    if from_ts is not None and to_ts is None:
+        to_ts = _epoch_ms()
+    rows, total = await storage.get_events(
+        page=page, limit=limit, integration="knx",
+        entity=entity, from_ts=from_ts, to_ts=to_ts,
+    )
+    return PaginatedEvents(
+        total=total, page=page, limit=limit,
+        items=[_to_response(r) for r in rows],
+    )
+
+
+@app.get("/api/protocol/activity")
+async def api_protocol_activity(
+    request: Request,
+    protocol: str = Query(..., description="Protocol name like knx, zigbee, zwave, mqtt"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(100, ge=1, le=500),
+    entity: str | None = Query(None),
+) -> PaginatedEvents:
+    """Events for a specific protocol/integration from the events table."""
+    from_str = request.query_params.get("from")
+    to_str = request.query_params.get("to")
+    from_ts = _parse_timestamp(from_str)
+    to_ts = _parse_timestamp(to_str)
+    if from_ts is not None and to_ts is None:
+        to_ts = _epoch_ms()
+    rows, total = await storage.get_events(
+        page=page, limit=limit, integration=protocol,
+        entity=entity, from_ts=from_ts, to_ts=to_ts,
+    )
+    return PaginatedEvents(
+        total=total, page=page, limit=limit,
+        items=[_to_response(r) for r in rows],
     )
 
 

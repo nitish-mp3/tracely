@@ -170,6 +170,22 @@ export async function getKnxTelegrams(params = {}) {
   return request(`/api/knx/telegrams${qs.toString() ? '?' + qs : ''}`);
 }
 
+export async function getKnxActivity(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v);
+  }
+  return request(`/api/knx/activity${qs.toString() ? '?' + qs : ''}`);
+}
+
+export async function getProtocolActivity(protocol, params = {}) {
+  const qs = new URLSearchParams({ protocol });
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v);
+  }
+  return request(`/api/protocol/activity?${qs}`);
+}
+
 export async function getKnxGroupAddresses(limit = 200) {
   return request(`/api/knx/group-addresses?limit=${limit}`);
 }

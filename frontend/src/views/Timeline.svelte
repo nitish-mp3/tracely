@@ -92,11 +92,24 @@
     observer.observe(sentinel);
   }
 
+  function matchesActiveFilters(event) {
+    const f = $filters;
+    if (f.entity && event.entity_id !== f.entity) return false;
+    if (f.domain && event.domain !== f.domain) return false;
+    if (f.area && event.area !== f.area) return false;
+    if (f.user_id && event.user_id !== f.user_id) return false;
+    if (f.event_type && event.event_type !== f.event_type) return false;
+    if (f.q) return false; // FTS — can't filter client-side
+    if (f.from || f.to) return false; // date range — server only
+    return true;
+  }
+
   onMount(() => {
     mounted = true;
     loadEvents();
     unsubSSE = subscribeEvents(
       (event) => {
+        if (!matchesActiveFilters(event)) return;
         liveCount++;
         flashLive();
         events.update((list) => [event, ...list]);
@@ -181,6 +194,7 @@
             on:click={() => handleEventClick(event)}
             on:tagclick={(e) => handleEntityTagClick(e.detail)}
             on:domainclick={(e) => handleDomainTagClick(e.detail)}
+            on:viewin={(e) => { $currentView = e.detail; }}
           />
         </li>
       {/each}

@@ -7,6 +7,21 @@
   export let compact = false;
 
   const dispatch = createEventDispatcher();
+  let showRaw = false;
+
+  function toggleRaw(e) {
+    e.stopPropagation();
+    showRaw = !showRaw;
+  }
+
+  function formatPayload(payload) {
+    try {
+      const obj = typeof payload === 'string' ? JSON.parse(payload) : payload;
+      return JSON.stringify(obj, null, 2);
+    } catch {
+      return String(payload || '');
+    }
+  }
 
   function categoryColor(domain) {
     if (!domain) return 'var(--color-system)';
@@ -119,10 +134,17 @@
     if (event.domain) dispatch('domainclick', event.domain);
   }
 
+  function handleViewInMonitor(e, view) {
+    e.stopPropagation();
+    dispatch('viewin', view);
+  }
+
   $: stateChange = getStateChange();
   $: parsed = parseEventName(event.name, event.entity_id);
   $: newStateUnavailable = stateChange && isUnavailable(stateChange.to);
   $: userLabel = getUserLabel(event.user_id);
+  $: isKnx = event.integration === 'knx' || (event.entity_id && event.entity_id.includes('knx'));
+  $: isZigbee = event.integration === 'mqtt' || event.integration === 'zha' || event.integration === 'zigbee2mqtt' || (event.entity_id && (event.entity_id.includes('zigbee') || event.entity_id.includes('z2m')));
 </script>
 
 <button
@@ -185,6 +207,18 @@
           {event.integration}
         </span>
       {/if}
+      {#if isKnx}
+        <button class="tag crosslink-tag knx-link" on:click={(e) => handleViewInMonitor(e, 'knx')} title="View in KNX Monitor">
+          <svg class="tag-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 6h3l1-3 2 6 1-3h3" /></svg>
+          KNX
+        </button>
+      {/if}
+      {#if isZigbee}
+        <button class="tag crosslink-tag zigbee-link" on:click={(e) => handleViewInMonitor(e, 'zigbee')} title="View in Zigbee Monitor">
+          <svg class="tag-icon" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 3h8L2 9h8" /></svg>
+          Zigbee
+        </button>
+      {/if}
     </div>
   </div>
 
@@ -201,7 +235,26 @@
       <svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 2h8v12l-4-3-4 3V2z" /></svg>
     </span>
   {/if}
+
+  {#if !compact}
+    <button class="raw-toggle" on:click={toggleRaw} title={showRaw ? 'Hide raw data' : 'Show raw data'} aria-label="Toggle raw payload">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M5 4L1 8l4 4M11 4l4 4-4 4M9 2l-2 12" /></svg>
+    </button>
+  {/if}
 </button>
+
+{#if showRaw && event.payload}
+  <div class="raw-panel">
+    <div class="raw-header">
+      <span class="raw-title">Raw Payload</span>
+      <span class="raw-type">{event.event_type}</span>
+      {#if event.id}
+        <span class="raw-id">{event.id}</span>
+      {/if}
+    </div>
+    <pre class="raw-json">{formatPayload(event.payload)}</pre>
+  </div>
+{/if}
 
 <style>
   .event-node {
@@ -304,6 +357,28 @@
     border-color: var(--color-border);
   }
 
+  /* Cross-link monitor buttons */
+  .crosslink-tag {
+    cursor: pointer; font-weight: 600;
+  }
+  .crosslink-tag:hover { transform: translateY(-1px); }
+  .knx-link {
+    color: #f59e0b; background: rgba(245,158,11,.1);
+    border-color: rgba(245,158,11,.2);
+  }
+  .knx-link:hover {
+    background: rgba(245,158,11,.2); border-color: #f59e0b;
+    box-shadow: 0 0 6px rgba(245,158,11,.2);
+  }
+  .zigbee-link {
+    color: #22c55e; background: rgba(34,197,94,.1);
+    border-color: rgba(34,197,94,.2);
+  }
+  .zigbee-link:hover {
+    background: rgba(34,197,94,.2); border-color: #22c55e;
+    box-shadow: 0 0 6px rgba(34,197,94,.2);
+  }
+
   /* Unavailable state styling */
   .sc-val.sc-unavail {
     color: var(--color-error, #ef4444); background: rgba(239,68,68,.12);
@@ -329,6 +404,56 @@
   .bookmark-icon svg { width: 12px; height: 12px; }
   .bookmarked { border-color: rgba(251,191,36,.3); background: rgba(251,191,36,.03); }
   .bookmarked:hover { border-color: rgba(251,191,36,.5); }
+
+  /* Raw data toggle button */
+  .raw-toggle {
+    position: absolute; bottom: 6px; right: 6px;
+    width: 22px; height: 22px; padding: 3px;
+    border-radius: var(--radius-sm); background: var(--color-surface-hover);
+    color: var(--color-text-muted); opacity: 0;
+    transition: all var(--duration-fast); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .raw-toggle svg { width: 14px; height: 14px; }
+  .event-node:hover .raw-toggle { opacity: 0.6; }
+  .raw-toggle:hover { opacity: 1 !important; color: var(--color-primary); background: var(--color-primary-soft); }
+
+  /* Raw payload panel */
+  .raw-panel {
+    margin-top: -1px; padding: var(--sp-3) var(--sp-4);
+    border: 1px solid var(--color-border); border-top: none;
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+    background: var(--color-bg-elevated);
+    animation: slideDown 0.15s ease-out;
+  }
+  @keyframes slideDown {
+    from { opacity: 0; max-height: 0; }
+    to { opacity: 1; max-height: 600px; }
+  }
+  .raw-header {
+    display: flex; align-items: center; gap: var(--sp-2);
+    margin-bottom: var(--sp-2); padding-bottom: var(--sp-2);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .raw-title { font-size: var(--text-xs); font-weight: 600; color: var(--color-text); }
+  .raw-type {
+    font-size: var(--text-2xs); font-family: var(--font-mono);
+    padding: 1px 6px; border-radius: var(--radius-full);
+    background: var(--color-info-soft); color: var(--color-info);
+  }
+  .raw-id {
+    font-size: var(--text-2xs); font-family: var(--font-mono);
+    color: var(--color-text-muted); margin-left: auto;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px;
+  }
+  .raw-json {
+    font-size: 11px; font-family: var(--font-mono);
+    color: var(--color-text-secondary); line-height: 1.5;
+    max-height: 400px; overflow-y: auto; overflow-x: auto;
+    white-space: pre; tab-size: 2; margin: 0;
+    padding: var(--sp-2); border-radius: var(--radius-sm);
+    background: var(--color-surface);
+  }
 
   @media (max-width: 640px) {
     .event-node { padding: var(--sp-2) var(--sp-3); gap: var(--sp-2); }

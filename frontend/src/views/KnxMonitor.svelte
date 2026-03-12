@@ -1,7 +1,23 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
-  import { getKnxTelegrams, getKnxGroupAddresses, getKnxFlow, subscribeKnxEvents } from '../lib/api.js';
+  import { getKnxTelegrams, getKnxGroupAddresses, getKnxFlow, subscribeKnxEvents, getKnxActivity, subscribeEvents } from '../lib/api.js';
   import { currentView } from '../stores/config.js';
+  import { selectedEventId } from '../stores/events.js';
+  import EventNode from '../components/EventNode.svelte';
+
+  // ── Tab state ──────────────────────────────────────────
+  let activeTab = 'telegrams'; // 'telegrams' | 'activity'
+
+  // ── KNX Entity Activity state ──────────────────────────
+  let activityEvents = [];
+  let activityTotal = 0;
+  let activityPage = 1;
+  let activityLoading = false;
+  let activityLoadingMore = false;
+  let activityHasMore = true;
+  let activitySentinel;
+  let activityObserver;
+  let unsubActivitySSE;
 
   // ── State ──────────────────────────────────────────────
   let telegrams = [];
@@ -106,6 +122,58 @@
     flowData = null;
   }
 
+  // ── KNX Activity (entity state changes) ────────────────
+
+  async function loadActivity(append = false) {
+    if (!append) {
+      activityLoading = true;
+      activityPage = 1;
+    } else {
+      activityLoadingMore = true;
+    }
+    try {
+      const params = { page: activityPage, limit: LIMIT };
+      if (fromDate) params.from = new Date(fromDate).toISOString();
+      if (toDate) params.to = new Date(toDate).toISOString();
+      const res = await getKnxActivity(params);
+      activityTotal = res.total;
+      activityHasMore = (res.page * res.limit) < res.total;
+      if (append) {
+        activityEvents = [...activityEvents, ...res.items];
+      } else {
+        activityEvents = res.items;
+      }
+    } catch (err) {
+      console.error('KNX activity load error', err);
+    } finally {
+      activityLoading = false;
+      activityLoadingMore = false;
+    }
+  }
+
+  async function loadMoreActivity() {
+    if (activityLoadingMore || !activityHasMore) return;
+    activityPage++;
+    await loadActivity(true);
+  }
+
+  function handleActivityEventClick(event) {
+    $selectedEventId = event.id;
+    $currentView = 'trace';
+  }
+
+  function setupActivityObserver() {
+    if (activityObserver) activityObserver.disconnect();
+    if (!activitySentinel) return;
+    activityObserver = new IntersectionObserver(
+      (entries) => { if (entries[0].isIntersecting) loadMoreActivity(); },
+      { rootMargin: '200px' },
+    );
+    activityObserver.observe(activitySentinel);
+  }
+
+  $: if (activitySentinel) setupActivityObserver();
+
   // ── Live SSE ───────────────────────────────────────────
 
   function handleLiveTelegram(tg) {
@@ -204,13 +272,25 @@
   }
 
   onMount(async () => {
-    await Promise.all([loadTelegrams(), loadGAs()]);
+    await Promise.all([loadTelegrams(), loadGAs(), loadActivity()]);
     unsubscribeKnx = subscribeKnxEvents(handleLiveTelegram);
+    // Also listen to main SSE for KNX entity state changes
+    unsubActivitySSE = subscribeEvents(
+      (event) => {
+        if (event.integration === 'knx' || (event.entity_id && event.entity_id.includes('knx'))) {
+          activityEvents = [event, ...activityEvents.slice(0, 499)];
+          activityTotal++;
+        }
+      },
+      () => {},
+    );
     return setupInfiniteScroll();
   });
 
   onDestroy(() => {
     if (unsubscribeKnx) unsubscribeKnx();
+    if (unsubActivitySSE) unsubActivitySSE();
+    if (activityObserver) activityObserver.disconnect();
   });
 </script>
 
@@ -232,6 +312,18 @@
         {#if liveCount > 0}
           <span class="live-badge">{liveCount} new</span>
         {/if}
+      </div>
+
+      <!-- Tab switcher -->
+      <div class="tab-switcher">
+        <button class="tab-btn" class:active={activeTab === 'telegrams'} on:click={() => activeTab = 'telegrams'}>
+          Bus Telegrams
+          <span class="tab-count">{total}</span>
+        </button>
+        <button class="tab-btn" class:active={activeTab === 'activity'} on:click={() => activeTab = 'activity'}>
+          Entity Activity
+          <span class="tab-count">{activityTotal}</span>
+        </button>
       </div>
 
       <!-- Summary chips -->
@@ -256,6 +348,7 @@
     </div>
 
     <!-- Filter bar -->
+    {#if activeTab === 'telegrams'}
     <div class="filter-bar">
       <div class="filter-row">
         <div class="filter-group">
@@ -389,6 +482,47 @@
         {/if}
       {/if}
     </div>
+    {/if}
+
+    <!-- ── Activity tab: entity state changes ─────────── -->
+    {#if activeTab === 'activity'}
+    <div class="activity-panel">
+      {#if activityLoading}
+        <div class="loading-state">
+          <div class="spinner" />
+          <span>Loading KNX entity activity…</span>
+        </div>
+      {:else if activityEvents.length === 0}
+        <div class="empty-state">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <circle cx="10" cy="24" r="4"/><circle cx="24" cy="10" r="4"/><circle cx="38" cy="24" r="4"/><circle cx="24" cy="38" r="4"/>
+            <path d="M14 24h20M24 14v20"/>
+          </svg>
+          <p>No KNX entity activity yet.</p>
+          <span>State changes from KNX entities (sensors, switches, lights, etc.) will appear here.</span>
+        </div>
+      {:else}
+        <ul class="activity-list">
+          {#each activityEvents as event (event.id)}
+            <li class="activity-item">
+              <EventNode
+                {event}
+                on:click={() => handleActivityEventClick(event)}
+                on:viewin={(e) => { $currentView = e.detail; }}
+              />
+            </li>
+          {/each}
+        </ul>
+        {#if activityHasMore}
+          <div bind:this={activitySentinel} class="scroll-sentinel">
+            {#if activityLoadingMore}
+              <div class="spinner small" />
+            {/if}
+          </div>
+        {/if}
+      {/if}
+    </div>
+    {/if}
   </div>
 
   <!-- ── Right: GA explorer ──────────────────────────── -->
@@ -1173,5 +1307,62 @@
     color: var(--color-text-muted);
     font-size: 13px;
     padding: 32px 0;
+  }
+
+  /* ── Tab switcher ───────────────────────────── */
+  .tab-switcher {
+    display: flex;
+    gap: 2px;
+    padding: 3px;
+    background: var(--color-bg);
+    border-radius: 8px;
+    border: 1px solid var(--color-border);
+  }
+  .tab-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--color-text-muted);
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .tab-btn:hover { color: var(--color-text-secondary); }
+  .tab-btn.active {
+    color: var(--color-text);
+    background: var(--color-surface);
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  .tab-count {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--color-surface-hover);
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .tab-btn.active .tab-count {
+    background: rgba(99,102,241,.15);
+    color: #818cf8;
+  }
+
+  /* ── Activity panel ─────────────────────────── */
+  .activity-panel {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px 16px;
+  }
+  .activity-list {
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .activity-item {
+    animation: fadeIn 0.2s ease both;
   }
 </style>

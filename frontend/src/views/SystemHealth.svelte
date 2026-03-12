@@ -36,12 +36,38 @@
     });
   }
 
+  function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+  }
+
+  function formatUptime(secs) {
+    if (!secs) return '—';
+    const days = Math.floor(secs / 86400);
+    const hrs = Math.floor((secs % 86400) / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    if (days > 0) return `${days}d ${hrs}h ${mins}m`;
+    if (hrs > 0) return `${hrs}h ${mins}m`;
+    return `${mins}m`;
+  }
+
   function handleEntityClick(entityId) {
     $selectedEntityTag = entityId;
   }
 
   $: sortedDeviceTypes = data?.device_types
     ? Object.entries(data.device_types).sort((a, b) => b[1] - a[1])
+    : [];
+
+  $: sortedDomains = data?.domain_counts
+    ? Object.entries(data.domain_counts).sort((a, b) => b[1] - a[1])
+    : [];
+
+  $: sortedAreas = data?.area_counts
+    ? Object.entries(data.area_counts).sort((a, b) => b[1] - a[1])
     : [];
 </script>
 
@@ -102,9 +128,113 @@
           <span class="kpi-label">Integrations</span>
         </div>
       </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.66 0 3-4.03 3-9s-1.34-9-3-9m0 18c-1.66 0-3-4.03-3-9s1.34-9 3-9" /></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-value">{formatBytes(data.db_size_bytes)}</span>
+          <span class="kpi-label">Database Size</span>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-value">{formatUptime(data.uptime_seconds)}</span>
+          <span class="kpi-label">Tracely Uptime</span>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><path d="M14 2v6h6M16 13H8M16 17H8M10 9H8" /></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-value">{(data.events_count || 0).toLocaleString()}</span>
+          <span class="kpi-label">Total Events</span>
+        </div>
+      </div>
+
+      <div class="kpi-card">
+        <div class="kpi-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-value">{sortedAreas.length}</span>
+          <span class="kpi-label">Areas</span>
+        </div>
+      </div>
     </div>
 
-    <!-- Device Types / Integrations Breakdown -->
+    <!-- Network Info -->
+    {#if data.network_info && data.network_info.length > 0}
+      <div class="section-card">
+        <h3 class="section-title">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 10.55a7 7 0 019.08 0M5.53 12.61a3 3 0 013.95 0M8 15h.01M1 8.25a10 10 0 0114 0" /></svg>
+          Network Devices
+        </h3>
+        <div class="network-list">
+          {#each data.network_info as net}
+            <div class="network-row">
+              <div class="network-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="8" rx="2" /><rect x="2" y="14" width="20" height="8" rx="2" /><path d="M6 6h.01M6 18h.01" /></svg>
+              </div>
+              <div class="network-info">
+                <span class="network-name">{net.friendly_name}</span>
+                <div class="network-details">
+                  {#if net.ip_address}
+                    <span class="net-detail"><span class="net-label">IP</span> {net.ip_address}</span>
+                  {/if}
+                  {#if net.mac_address}
+                    <span class="net-detail"><span class="net-label">MAC</span> {net.mac_address}</span>
+                  {/if}
+                  {#if net.ssid}
+                    <span class="net-detail"><span class="net-label">SSID</span> {net.ssid}</span>
+                  {/if}
+                  {#if net.signal_strength}
+                    <span class="net-detail"><span class="net-label">Signal</span> {net.signal_strength}</span>
+                  {/if}
+                </div>
+              </div>
+              <div class="network-state-wrap">
+                <span class="net-state" class:state-connected={net.state === 'home' || net.state === 'on' || net.state === 'connected'}
+                  class:state-disconnected={net.state === 'not_home' || net.state === 'off' || net.state === 'disconnected'}
+                  class:state-unavailable={net.state === 'unavailable'}>
+                  {net.state || '—'}
+                </span>
+                {#if net.integration}
+                  <span class="net-integration">{net.integration}</span>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- Area Breakdown -->
+    {#if sortedAreas.length > 0}
+      <div class="section-card">
+        <h3 class="section-title">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 6l6-4 6 4v7a1 1 0 01-1 1H3a1 1 0 01-1-1V6z" /><path d="M6 14V8h4v6" /></svg>
+          Areas ({sortedAreas.length})
+        </h3>
+        <div class="area-grid">
+          {#each sortedAreas as [name, count]}
+            <div class="area-chip">
+              <span class="area-name">{name}</span>
+              <span class="area-count">{count}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- Integrations Breakdown -->
     {#if sortedDeviceTypes.length > 0}
       <div class="section-card">
         <h3 class="section-title">
@@ -119,6 +249,25 @@
                 <div class="integration-bar" style="width: {Math.max(4, (count / data.total_entities) * 100)}%" />
               </div>
               <span class="integration-count">{count}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
+    <!-- Domain Breakdown -->
+    {#if sortedDomains.length > 0}
+      <div class="section-card">
+        <h3 class="section-title">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4h8M4 8h8M4 12h5" /></svg>
+          Domains ({sortedDomains.length})
+        </h3>
+        <div class="domain-grid">
+          {#each sortedDomains.slice(0, 30) as [name, count]}
+            <div class="domain-chip">
+              <DomainIcon domain={name} />
+              <span class="domain-name">{name}</span>
+              <span class="domain-count">{count}</span>
             </div>
           {/each}
         </div>
@@ -145,6 +294,9 @@
                 {#if entity.integration}
                   <span class="unavail-integration">{entity.integration}</span>
                 {/if}
+                {#if entity.area}
+                  <span class="unavail-area">{entity.area}</span>
+                {/if}
               </div>
             </button>
           {/each}
@@ -157,7 +309,7 @@
       <div class="section-card">
         <h3 class="section-title">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="7" /><path d="M8 4v4l2.5 1.5" /></svg>
-          Offline History
+          Offline History ({data.offline_periods.length})
         </h3>
         <div class="offline-list">
           {#each data.offline_periods as period}
@@ -347,6 +499,89 @@
   .offline-duration.duration-ongoing { color: var(--color-error, #ef4444); }
 
   .empty-note { color: var(--color-text-muted); font-size: var(--text-sm); }
+
+  /* Network Devices */
+  .network-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .network-row {
+    display: flex; align-items: center; gap: var(--sp-3);
+    padding: var(--sp-3); border-radius: var(--radius-md);
+    border: 1px solid var(--color-border); background: var(--color-surface);
+    transition: all var(--duration-fast);
+  }
+  .network-row:hover { border-color: var(--color-border-hover); background: var(--color-surface-hover); }
+  .network-icon {
+    width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius-md); background: var(--color-primary-soft, rgba(99,102,241,.1));
+    color: var(--color-primary); flex-shrink: 0;
+  }
+  .network-icon svg { width: 18px; height: 18px; }
+  .network-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .network-name {
+    font-size: var(--text-sm); font-weight: 600; color: var(--color-text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .network-details { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+  .net-detail {
+    font-size: var(--text-2xs); color: var(--color-text-secondary);
+    font-family: var(--font-mono);
+  }
+  .net-label {
+    font-weight: 600; color: var(--color-text-muted); text-transform: uppercase;
+    font-size: var(--text-2xs); margin-right: 2px;
+  }
+  .network-state-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
+  .net-state {
+    padding: 2px 8px; border-radius: var(--radius-full);
+    font-size: var(--text-2xs); font-weight: 600;
+    color: var(--color-text-muted); background: var(--color-surface-hover);
+  }
+  .net-state.state-connected { color: var(--color-success); background: var(--color-success-soft); }
+  .net-state.state-disconnected { color: var(--color-error, #ef4444); background: rgba(239,68,68,.1); }
+  .net-state.state-unavailable { color: var(--color-error, #ef4444); background: rgba(239,68,68,.1); }
+  .net-integration {
+    font-size: var(--text-2xs); color: var(--color-text-muted);
+    padding: 1px 6px; border-radius: var(--radius-full);
+    background: var(--color-surface-hover);
+  }
+
+  /* Area Breakdown */
+  .area-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+  .area-chip {
+    display: flex; align-items: center; gap: var(--sp-2);
+    padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-full);
+    background: var(--color-surface-hover); border: 1px solid var(--color-border);
+    font-size: var(--text-sm); transition: all var(--duration-fast);
+  }
+  .area-chip:hover { border-color: var(--color-border-hover); }
+  .area-name { font-weight: 500; color: var(--color-text); }
+  .area-count {
+    font-family: var(--font-mono); font-size: var(--text-2xs);
+    font-weight: 700; color: var(--color-primary);
+    background: var(--color-primary-soft, rgba(99,102,241,.1));
+    padding: 1px 6px; border-radius: var(--radius-full);
+  }
+
+  /* Domain Breakdown */
+  .domain-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+  .domain-chip {
+    display: flex; align-items: center; gap: var(--sp-1);
+    padding: 3px var(--sp-2); border-radius: var(--radius-full);
+    background: var(--color-surface-hover); border: 1px solid var(--color-border);
+    font-size: var(--text-xs); transition: all var(--duration-fast);
+  }
+  .domain-chip:hover { border-color: var(--color-border-hover); }
+  .domain-name { font-weight: 500; color: var(--color-text); }
+  .domain-count {
+    font-family: var(--font-mono); font-size: var(--text-2xs);
+    font-weight: 600; color: var(--color-text-muted);
+  }
+
+  /* Unavailable area tag */
+  .unavail-area {
+    padding: 2px 8px; border-radius: var(--radius-full);
+    font-size: var(--text-2xs); color: var(--color-text-muted);
+    background: var(--color-surface-hover);
+  }
 
   @media (max-width: 640px) {
     .health-view { padding: var(--sp-4) var(--sp-3); gap: var(--sp-3); }

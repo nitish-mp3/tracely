@@ -6,7 +6,7 @@ addons:
   - slug: tracely
     name: Tracely
     description: Offline causal event tracing for Home Assistant with interactive timelines and causal trees.
-    version: "2.9.2"
+    version: "2.9.3"
     url: https://github.com/nitish-mp3/tracely
     startup: services
     boot: auto
