@@ -83,6 +83,30 @@
     $currentView = 'trace';
   }
 
+  function getZigbeeDetails(event) {
+    try {
+      const payload = JSON.parse(event.payload || '{}');
+      const attrs = (payload.new_state || payload)?.attributes || {};
+      const details = [];
+      if (attrs.linkquality !== undefined) {
+        const lqi = Number(attrs.linkquality);
+        details.push({ key: 'LQI', val: `${lqi}/255`, type: lqi > 150 ? 'ok' : lqi > 80 ? 'warn' : 'bad' });
+      }
+      if (attrs.battery !== undefined) {
+        const bat = Number(attrs.battery);
+        details.push({ key: 'Battery', val: `${bat}%`, type: bat > 30 ? 'ok' : 'bad' });
+      }
+      if (attrs.temperature !== undefined) details.push({ key: 'Temp', val: `${attrs.temperature}°C`, type: 'info' });
+      if (attrs.humidity !== undefined) details.push({ key: 'Humidity', val: `${attrs.humidity}%`, type: 'info' });
+      const lux = attrs.illuminance_lux ?? attrs.illuminance;
+      if (lux !== undefined) details.push({ key: 'Lux', val: String(lux), type: 'info' });
+      if (attrs.action) details.push({ key: 'Action', val: String(attrs.action), type: 'info' });
+      if (attrs.occupancy !== undefined) details.push({ key: 'Occupancy', val: attrs.occupancy ? 'yes' : 'no', type: attrs.occupancy ? 'ok' : 'info' });
+      if (attrs.contact !== undefined) details.push({ key: 'Contact', val: attrs.contact ? 'closed' : 'open', type: attrs.contact ? 'ok' : 'warn' });
+      return details;
+    } catch { return []; }
+  }
+
   function applyFilters() {
     loadEvents(false);
   }
@@ -173,6 +197,12 @@
           <span class="chip-label">Entities</span>
           <span class="chip-value">{entityCount}</span>
         </div>
+        {#each sortedDomains.slice(0, 5) as [domain, count]}
+          <div class="chip chip-domain">
+            <span class="chip-label">{domain}</span>
+            <span class="chip-value">{count}</span>
+          </div>
+        {/each}
       </div>
     </div>
 
@@ -225,6 +255,16 @@
                 on:click={() => handleEventClick(event)}
                 on:viewin={(e) => { $currentView = e.detail; }}
               />
+              {#if getZigbeeDetails(event).length > 0}
+                <div class="proto-details">
+                  {#each getZigbeeDetails(event) as d}
+                    <span class="proto-chip proto-{d.type}">
+                      <span class="pc-k">{d.key}</span>
+                      <span class="pc-v">{d.val}</span>
+                    </span>
+                  {/each}
+                </div>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -239,23 +279,6 @@
     </div>
   </div>
 
-  <!-- Sidebar: domain breakdown (only when data exists) -->
-  {#if sortedDomains.length > 0}
-  <div class="sidebar">
-    <div class="sidebar-header">
-      <h3 class="sidebar-title">Domains</h3>
-      <span class="sidebar-count">{sortedDomains.length}</span>
-    </div>
-    <div class="domain-list">
-      {#each sortedDomains as [domain, count]}
-        <div class="domain-row">
-          <span class="domain-name">{domain}</span>
-          <span class="domain-count">{count}</span>
-        </div>
-      {/each}
-    </div>
-  </div>
-  {/if}
 </div>
 
 <style>
@@ -270,7 +293,6 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    border-right: 1px solid var(--color-border);
   }
 
   /* ── Header ─────────────────────────────────── */
@@ -462,67 +484,30 @@
     padding: 12px; color: var(--color-text-muted); font-size: 12px;
   }
 
-  /* ── Sidebar ────────────────────────────────── */
-  .sidebar {
-    width: 200px;
-    flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    background: var(--color-surface);
+  /* ── Protocol Detail Chips ──────────────────── */
+  .proto-details {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    padding: 4px 12px 8px 40px;
   }
-  .sidebar-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 14px;
-    border-bottom: 1px solid var(--color-border);
+  .proto-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 500;
+    background: var(--color-surface-hover);
+    border: 1px solid var(--color-border);
   }
-  .sidebar-title {
-    font-size: 13px;
-    font-weight: 600;
-    margin: 0;
-    color: var(--color-text);
-  }
-  .sidebar-count {
-    font-size: 11px;
-    font-weight: 600;
-    padding: 1px 8px;
-    border-radius: 999px;
-    background: var(--color-bg);
-    color: var(--color-text-muted);
-  }
-  .domain-list {
-    flex: 1;
-    overflow-y: auto;
-    padding: 6px;
-  }
-  .domain-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 6px 10px;
-    border-radius: 6px;
-    font-size: 12px;
-  }
-  .domain-row:hover { background: var(--color-surface-hover); }
-  .domain-name { color: var(--color-text); font-weight: 500; }
-  .domain-count {
-    font-weight: 600;
-    font-size: 11px;
-    color: var(--color-text-muted);
-    font-family: var(--font-mono);
-  }
-  .sidebar-empty {
-    padding: 24px 14px;
-    text-align: center;
-    color: var(--color-text-muted);
-    font-size: 12px;
-  }
+  .proto-ok { border-color: rgba(52,211,153,.4); background: rgba(52,211,153,.08); }
+  .proto-warn { border-color: rgba(251,191,36,.4); background: rgba(251,191,36,.08); }
+  .proto-bad { border-color: rgba(239,68,68,.4); background: rgba(239,68,68,.08); }
+  .pc-k { color: var(--color-text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .pc-v { color: var(--color-text); font-weight: 600; }
+  .proto-ok .pc-v { color: var(--color-success); }
+  .proto-bad .pc-v { color: var(--color-error, #ef4444); }
+  .proto-warn .pc-v { color: #f59e0b; }
 
-  @media (max-width: 768px) {
-    .zigbee-layout { flex-direction: column; }
-    .sidebar { width: 100%; max-height: 150px; border-right: none; border-top: 1px solid var(--color-border); }
-    .main-panel { border-right: none; }
+  /* ── Domain chips in header ──────────────────── */
+  .chip-domain {
+    background: var(--color-surface-hover);
+    border-color: var(--color-border);
   }
 </style>

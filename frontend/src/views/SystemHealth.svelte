@@ -7,16 +7,7 @@
   let data = null;
   let loading = true;
   let error = null;
-
-  // Collapsible section states
-  let showNetwork = false;
   let showAllNetwork = false;
-  let showAreas = true;
-  let showIntegrations = true;
-  let showDomains = false;
-  let showUnavailable = true;
-  let showOffline = false;
-
   const NETWORK_PREVIEW = 5;
 
   onMount(async () => {
@@ -69,15 +60,6 @@
     $selectedEntityTag = entityId;
   }
 
-  function toggleSection(name) {
-    if (name === 'network') showNetwork = !showNetwork;
-    else if (name === 'areas') showAreas = !showAreas;
-    else if (name === 'integrations') showIntegrations = !showIntegrations;
-    else if (name === 'domains') showDomains = !showDomains;
-    else if (name === 'unavailable') showUnavailable = !showUnavailable;
-    else if (name === 'offline') showOffline = !showOffline;
-  }
-
   $: sortedDeviceTypes = data?.device_types
     ? Object.entries(data.device_types).sort((a, b) => b[1] - a[1])
     : [];
@@ -93,16 +75,16 @@
   $: networkDevices = data?.network_info || [];
   $: visibleNetwork = showAllNetwork ? networkDevices : networkDevices.slice(0, NETWORK_PREVIEW);
   $: hiddenNetworkCount = networkDevices.length - NETWORK_PREVIEW;
-
-  // Compute availability percentage
   $: availabilityPct = data ? Math.round(((data.total_entities - data.unavailable_count) / Math.max(data.total_entities, 1)) * 100) : 100;
-
-  // Top integrations for quick-glance cards (top 4)
   $: topIntegrations = sortedDeviceTypes.slice(0, 4);
-
-  // Group network devices by state
-  $: networkConnected = networkDevices.filter(n => n.state === 'home' || n.state === 'on' || n.state === 'connected').length;
-  $: networkDisconnected = networkDevices.filter(n => n.state === 'not_home' || n.state === 'off' || n.state === 'disconnected').length;
+  $: networkConnected = networkDevices.filter(n => {
+    const s = n.state || '';
+    return s === 'home' || s === 'on' || s === 'connected' || s === 'online';
+  }).length;
+  $: networkDisconnected = networkDevices.filter(n => {
+    const s = n.state || '';
+    return s === 'not_home' || s === 'off' || s === 'disconnected' || s === 'unavailable';
+  }).length;
 </script>
 
 <section class="health-view" aria-label="System Health">
@@ -232,7 +214,7 @@
     <!-- Network Devices (collapsible, compact) -->
     {#if networkDevices.length > 0}
       <div class="section-card">
-        <button class="section-header" on:click={() => toggleSection('network')} aria-expanded={showNetwork}>
+        <div class="section-header">
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 10.55a7 7 0 019.08 0M5.53 12.61a3 3 0 013.95 0M8 15h.01M1 8.25a10 10 0 0114 0" /></svg>
             Network Devices
@@ -244,9 +226,7 @@
               {/if}
             </span>
           </h3>
-          <svg class="chevron" class:chevron-open={showNetwork} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
-        </button>
-        {#if showNetwork}
+        </div>
           <div class="network-table">
             <div class="net-table-head">
               <span class="nth-name">Device</span>
@@ -279,22 +259,19 @@
               </button>
             {/if}
           </div>
-        {/if}
       </div>
     {/if}
 
-    <!-- Area Breakdown (collapsible) -->
+    <!-- Area Breakdown -->
     {#if sortedAreas.length > 0}
       <div class="section-card">
-        <button class="section-header" on:click={() => toggleSection('areas')} aria-expanded={showAreas}>
+        <div class="section-header">
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 6l6-4 6 4v7a1 1 0 01-1 1H3a1 1 0 01-1-1V6z" /><path d="M6 14V8h4v6" /></svg>
             Areas
             <span class="section-count">{sortedAreas.length}</span>
           </h3>
-          <svg class="chevron" class:chevron-open={showAreas} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
-        </button>
-        {#if showAreas}
+        </div>
           <div class="area-grid">
             {#each sortedAreas as [name, count]}
               <div class="area-chip">
@@ -303,22 +280,19 @@
               </div>
             {/each}
           </div>
-        {/if}
       </div>
     {/if}
 
-    <!-- Integrations Breakdown (collapsible) -->
+    <!-- Integrations Breakdown -->
     {#if sortedDeviceTypes.length > 0}
       <div class="section-card">
-        <button class="section-header" on:click={() => toggleSection('integrations')} aria-expanded={showIntegrations}>
+        <div class="section-header">
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1" y="3" width="14" height="10" rx="2" /><path d="M1 7h14" /></svg>
             Integrations Breakdown
             <span class="section-count">{sortedDeviceTypes.length}</span>
           </h3>
-          <svg class="chevron" class:chevron-open={showIntegrations} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
-        </button>
-        {#if showIntegrations}
+        </div>
           <div class="integration-list">
             {#each sortedDeviceTypes as [name, count]}
               <div class="integration-row">
@@ -330,22 +304,19 @@
               </div>
             {/each}
           </div>
-        {/if}
       </div>
     {/if}
 
-    <!-- Domain Breakdown (collapsible) -->
+    <!-- Domain Breakdown -->
     {#if sortedDomains.length > 0}
       <div class="section-card">
-        <button class="section-header" on:click={() => toggleSection('domains')} aria-expanded={showDomains}>
+        <div class="section-header">
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4h8M4 8h8M4 12h5" /></svg>
             Domains
             <span class="section-count">{sortedDomains.length}</span>
           </h3>
-          <svg class="chevron" class:chevron-open={showDomains} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
-        </button>
-        {#if showDomains}
+        </div>
           <div class="domain-grid">
             {#each sortedDomains.slice(0, 30) as [name, count]}
               <div class="domain-chip">
@@ -355,22 +326,19 @@
               </div>
             {/each}
           </div>
-        {/if}
       </div>
     {/if}
 
-    <!-- Unavailable Entities (collapsible) -->
+    <!-- Unavailable Entities -->
     {#if data.unavailable.length > 0}
       <div class="section-card warn-card">
-        <button class="section-header" on:click={() => toggleSection('unavailable')} aria-expanded={showUnavailable}>
+        <div class="section-header">
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 1L1 14h14L8 1zM8 6v4M8 12h.01" /></svg>
             Unavailable Entities
             <span class="section-count warn">{data.unavailable_count}</span>
           </h3>
-          <svg class="chevron" class:chevron-open={showUnavailable} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
-        </button>
-        {#if showUnavailable}
+        </div>
           <div class="unavail-list">
             {#each data.unavailable as entity}
               <button class="unavail-row" on:click|stopPropagation={() => handleEntityClick(entity.entity_id)}>
@@ -391,13 +359,12 @@
               </button>
             {/each}
           </div>
-        {/if}
       </div>
     {/if}
 
-    <!-- Offline Periods (collapsible) -->
+    <!-- Offline History -->
     <div class="section-card">
-      <button class="section-header" on:click={() => toggleSection('offline')} aria-expanded={showOffline}>
+      <div class="section-header">
         <h3 class="section-title">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="7" /><path d="M8 4v4l2.5 1.5" /></svg>
           Offline History
@@ -405,9 +372,7 @@
             <span class="section-count">{data.offline_periods.length}</span>
           {/if}
         </h3>
-        <svg class="chevron" class:chevron-open={showOffline} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
-      </button>
-      {#if showOffline}
+      </div>
         {#if data.offline_periods.length > 0}
           <div class="offline-list">
             {#each data.offline_periods as period}
@@ -433,7 +398,6 @@
         {:else}
           <p class="empty-note">No offline periods recorded.</p>
         {/if}
-      {/if}
     </div>
   {/if}
 </section>
@@ -521,15 +485,12 @@
   }
   .warn-card { border-color: rgba(239,68,68,.25); }
 
-  /* Collapsible Section Header */
+  /* Section Header */
   .section-header {
-    display: flex; align-items: center; justify-content: space-between;
-    width: 100%; padding: var(--sp-3) var(--sp-4);
-    background: none; border: none; cursor: pointer;
-    transition: background var(--duration-fast);
-    text-align: left;
+    display: flex; align-items: center;
+    padding: var(--sp-3) var(--sp-4);
+    border-bottom: 1px solid var(--color-border);
   }
-  .section-header:hover { background: var(--color-surface-hover); }
   .section-title {
     display: flex; align-items: center; gap: var(--sp-2);
     font-size: var(--text-sm); font-weight: 700;
@@ -553,11 +514,7 @@
   }
   .net-sum-ok { color: var(--color-success); background: var(--color-success-soft); }
   .net-sum-bad { color: var(--color-error, #ef4444); background: rgba(239,68,68,.1); }
-  .chevron {
-    width: 14px; height: 14px; color: var(--color-text-muted); flex-shrink: 0;
-    transition: transform var(--duration-fast) var(--ease-out);
-  }
-  .chevron-open { transform: rotate(180deg); }
+
 
   /* Network Table (compact) */
   .network-table { padding: 0 var(--sp-4) var(--sp-3); }

@@ -162,6 +162,23 @@
     $currentView = 'trace';
   }
 
+  function getKnxDetails(event) {
+    try {
+      const payload = JSON.parse(event.payload || '{}');
+      const ns = payload.new_state || payload;
+      const attrs = ns?.attributes || {};
+      const details = [];
+      const stateVal = ns?.state;
+      if (stateVal !== undefined && stateVal !== null && stateVal !== 'unavailable' && stateVal !== 'unknown')
+        details.push({ key: 'Value', val: String(stateVal), type: 'info' });
+      if (attrs.unit_of_measurement) details.push({ key: 'Unit', val: attrs.unit_of_measurement, type: 'info' });
+      if (attrs.device_class) details.push({ key: 'Type', val: attrs.device_class, type: 'info' });
+      if (attrs.state_class) details.push({ key: 'StateClass', val: attrs.state_class, type: 'info' });
+      if (attrs.knx_group_address_send) details.push({ key: 'GA', val: attrs.knx_group_address_send, type: 'info' });
+      return details;
+    } catch { return []; }
+  }
+
   function setupActivityObserver() {
     if (activityObserver) activityObserver.disconnect();
     if (!activitySentinel) return;
@@ -512,6 +529,16 @@
                 on:click={() => handleActivityEventClick(event)}
                 on:viewin={(e) => { $currentView = e.detail; }}
               />
+              {#if getKnxDetails(event).length > 0}
+                <div class="proto-details">
+                  {#each getKnxDetails(event) as d}
+                    <span class="proto-chip proto-{d.type}">
+                      <span class="pc-k">{d.key}</span>
+                      <span class="pc-v">{d.val}</span>
+                    </span>
+                  {/each}
+                </div>
+              {/if}
             </li>
           {/each}
         </ul>
@@ -1366,4 +1393,23 @@
   .activity-item {
     animation: fadeIn 0.2s ease both;
   }
+
+  /* ── Protocol Detail Chips ────────────────── */
+  .proto-details {
+    display: flex; flex-wrap: wrap; gap: 4px;
+    padding: 3px 12px 8px 40px;
+  }
+  .proto-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 999px;
+    font-size: 11px; font-weight: 500;
+    background: var(--color-surface-hover);
+    border: 1px solid var(--color-border);
+  }
+  .proto-info { border-color: rgba(99,102,241,.3); background: rgba(99,102,241,.06); }
+  .pc-k { color: var(--color-text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .pc-v { color: var(--color-text); font-weight: 600; }
+  .proto-ok .pc-v { color: var(--color-success); }
+  .proto-bad .pc-v { color: var(--color-error, #ef4444); }
+  .proto-warn .pc-v { color: #f59e0b; }
 </style>

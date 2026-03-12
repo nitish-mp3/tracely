@@ -848,8 +848,8 @@ async def api_system_health() -> dict[str, Any]:
         eid = e.entity_id
         integration = e.integration or ""
         domain = e.domain or (eid.split(".")[0] if "." in eid else "")
-        state = e.attributes.get("state", "")
         attrs = e.attributes
+        state = e.state or attrs.get("state", "")
 
         if integration:
             device_types[integration] = device_types.get(integration, 0) + 1

@@ -19,6 +19,7 @@ class EntityInfo:
     area: str = ""
     integration: str = ""
     device_id: str = ""
+    state: str = ""
     attributes: dict = field(default_factory=dict)
 
 
@@ -73,6 +74,7 @@ class EntityMap:
                 entity_id=entity_id,
                 friendly_name=attrs.get("friendly_name", entity_id),
                 domain=domain,
+                state=state.get("state", ""),
                 attributes=attrs,
             )
             count += 1
@@ -123,12 +125,14 @@ class EntityMap:
             existing.friendly_name = attrs.get(
                 "friendly_name", existing.friendly_name,
             )
+            existing.state = new_state.get("state", existing.state)
             existing.attributes = attrs
         else:
             self._entities[entity_id] = EntityInfo(
                 entity_id=entity_id,
                 friendly_name=attrs.get("friendly_name", entity_id),
                 domain=domain,
+                state=new_state.get("state", ""),
                 attributes=attrs,
             )
 
