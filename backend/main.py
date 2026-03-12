@@ -545,6 +545,8 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
         "linked_entity_id": linked_entity,
         "linked_event_id": None,
         "context_id": ha_context_id,
+        # Extra enrichment from knx/subscribe_telegrams (stored in GA table only)
+        "_ga_name": destination_text,
     }
     try:
         await storage.insert_knx_telegram(telegram)

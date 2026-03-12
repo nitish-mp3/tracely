@@ -699,16 +699,22 @@ class Storage:
             "GroupValueRead":     "total_reads",
             "GroupValueResponse": "total_responses",
         }.get(telegram["telegram_type"], "total_writes")
+        ga_name: str | None = telegram.get("_ga_name") or None
+        dpt: str | None = telegram.get("dpt_type") or None
         await self._db.execute(
             f"""INSERT INTO knx_group_addresses
-                  (group_address, last_seen, {col}, last_value)
-                VALUES (?, ?, 1, ?)
+                  (group_address, friendly_name, dpt_type, last_seen, {col}, last_value)
+                VALUES (?, ?, ?, ?, 1, ?)
                 ON CONFLICT(group_address) DO UPDATE SET
                   last_seen = excluded.last_seen,
                   {col} = {col} + 1,
+                  friendly_name = COALESCE(excluded.friendly_name, friendly_name),
+                  dpt_type = COALESCE(excluded.dpt_type, dpt_type),
                   last_value = COALESCE(excluded.last_value, last_value)""",
             (
                 telegram["group_address"],
+                ga_name,
+                dpt,
                 telegram["timestamp"],
                 telegram.get("decoded_value"),
             ),

@@ -307,37 +307,42 @@
     if (v === null || v === undefined) return null;
     try {
       const p = JSON.parse(v);
+      if (p === null) return null;           // JSON string "null" → nothing
       if (typeof p === 'boolean') return p ? 'ON' : 'OFF';
       if (typeof p === 'number')  return String(p);
-      if (typeof p === 'string')  return p;
+      if (typeof p === 'string' && p !== 'None') return p;  // guard Python "None" too
+      if (typeof p === 'string') return null;
       return JSON.stringify(p);
     } catch {
       return String(v);
     }
   }
 
-  // Returns { text, style } for the value display block
+  // Hex payload as a display string: "0x00" format
+  function fmtHex(raw) {
+    if (!raw) return null;
+    // raw is stored without 0x prefix, e.g. "00", "ff"
+    return `0x${raw.toUpperCase()}`;
+  }
+
+  // Returns { text, style, isLabel, isHex } for the value display block
   function getTelegramValue(tg) {
     const type = tg.telegram_type || '';
     const decoded = decodeValue(tg.decoded_value);
+    const hex = fmtHex(tg.raw_data);
     if (type === 'GroupValueRead') {
-      return { text: 'Read Request', style: 'read', isLabel: true };
+      return { text: 'Read Request', style: 'read', isLabel: true, isHex: false };
     }
     if (type === 'GroupValueResponse') {
-      return {
-        text: decoded ?? '—',
-        style: decoded !== null ? 'response' : 'empty',
-        isLabel: decoded === null,
-      };
+      if (decoded !== null) return { text: decoded, style: 'response', isLabel: false, isHex: false };
+      return { text: hex ?? '—', style: hex ? 'neutral' : 'empty', isLabel: false, isHex: !!hex };
     }
     if (type === 'GroupValueWrite') {
-      return {
-        text: decoded ?? '—',
-        style: decoded !== null ? 'write' : 'empty',
-        isLabel: decoded === null,
-      };
+      if (decoded !== null) return { text: decoded, style: 'write', isLabel: false, isHex: false };
+      return { text: hex ?? '—', style: hex ? 'neutral' : 'empty', isLabel: false, isHex: !!hex };
     }
-    return { text: decoded ?? '—', style: 'neutral', isLabel: decoded === null };
+    if (decoded !== null) return { text: decoded, style: 'neutral', isLabel: false, isHex: false };
+    return { text: hex ?? '—', style: hex ? 'neutral' : 'empty', isLabel: false, isHex: !!hex };
   }
 
   // Look up GA friendly name from our group address list
@@ -659,13 +664,15 @@
               <th>Group Address</th>
               <th>Type</th>
               <th>Value</th>
+              <th>DPT</th>
               <th>Source</th>
               <th>Entity</th>
-              <th>Raw</th>
             </tr>
           </thead>
           <tbody>
             {#each telegrams as tg (tg.id)}
+              {@const tval = getTelegramValue(tg)}
+              {@const gaLabel = gaName(tg.group_address)}
               <tr
                 class="tg-row"
                 class:incoming={tg.direction === 'Incoming'}
@@ -687,13 +694,35 @@
                     title="Filter by {tg.group_address}">
                     {tg.group_address}
                   </button>
+                  {#if gaLabel}
+                    <div class="ga-label">{gaLabel}</div>
+                  {/if}
                 </td>
                 <td class="col-type">
                   <span class="type-badge type-{tg.telegram_type?.toLowerCase().replace('groupvalue', '')}">
                     {tgTypeShort(tg.telegram_type)}
                   </span>
                 </td>
-                <td class="col-value">{decodeValue(tg.decoded_value)}</td>
+                <td class="col-value" class:col-value-hex={tval.isHex}>
+                  {#if tval.style === 'read'}
+                    <span class="val-read">Read?</span>
+                  {:else if tval.isHex}
+                    <span class="val-hex">{tval.text}</span>
+                  {:else if tval.style === 'write'}
+                    <span class="val-write">{tval.text}</span>
+                  {:else if tval.style === 'response'}
+                    <span class="val-response">{tval.text}</span>
+                  {:else}
+                    <span class="dim">{tval.text}</span>
+                  {/if}
+                </td>
+                <td class="col-dpt">
+                  {#if tg.dpt_type}
+                    <span class="dpt-chip">{tg.dpt_type}</span>
+                  {:else}
+                    <span class="dim">—</span>
+                  {/if}
+                </td>
                 <td class="col-source">{tg.source_address ?? '—'}</td>
                 <td class="col-entity">
                   {#if tg.linked_entity_id}
@@ -701,13 +730,6 @@
                       on:click|stopPropagation={() => { filterEntity = tg.linked_entity_id; applyFilters(); addToast(`Filtered by entity`, 'info', 2000); }}>
                       {tg.linked_entity_id.split('.').pop()}
                     </button>
-                  {:else}
-                    <span class="dim">—</span>
-                  {/if}
-                </td>
-                <td class="col-raw">
-                  {#if tg.raw_data}
-                    <span class="raw-bytes" title="Raw hex: {tg.raw_data}">{tg.raw_data.slice(0,8)}{tg.raw_data.length > 8 ? '…' : ''}</span>
                   {:else}
                     <span class="dim">—</span>
                   {/if}
@@ -1403,7 +1425,38 @@
   }
 
   .dim   { color: var(--color-text-muted); }
-  .col-value { font-weight: 600; }
+
+  /* Value cell */
+  .col-value { font-weight: 600; min-width: 80px; }
+  .val-write    { color: #818cf8; font-family: ui-monospace, monospace; }
+  .val-response { color: #4ade80; font-family: ui-monospace, monospace; }
+  .val-read     { color: #fbbf24; font-style: italic; font-family: inherit; font-weight: 500; }
+  .val-hex      { color: var(--color-text-muted); font-family: ui-monospace, monospace; font-size: 11px; font-weight: 500; }
+
+  /* DPT chip */
+  .col-dpt { white-space: nowrap; }
+  .dpt-chip {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 7px;
+    border-radius: 5px;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+    letter-spacing: 0.02em;
+  }
+
+  /* GA friendly name label below address */
+  .ga-label {
+    font-size: 10px;
+    color: var(--color-text-muted);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 160px;
+  }
 
   /* ── Scroll sentinel ────────────────────────── */
   .scroll-sentinel {
@@ -2306,10 +2359,10 @@
     .panel-header {
       flex-wrap: wrap;
     }
-    /* Cols hidden on mobile: entity + raw */
+    /* Cols hidden on mobile: DPT + entity */
     .tg-table .col-entity,
-    .tg-table thead th:nth-child(7),
-    .tg-table .col-raw,
+    .tg-table .col-dpt,
+    .tg-table thead th:nth-child(6),
     .tg-table thead th:nth-child(8) {
       display: none;
     }
@@ -2354,7 +2407,7 @@
     .tg-table thead th { padding: 6px 8px; }
     /* Also hide source col on very small phones */
     .tg-table .col-source,
-    .tg-table thead th:nth-child(6) {
+    .tg-table thead th:nth-child(7) {
       display: none;
     }
   }
