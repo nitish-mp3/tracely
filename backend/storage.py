@@ -780,10 +780,10 @@ class Storage:
         # KNX telegrams for this GA in the window
         knx_rows = await self._db.execute_fetchall(
             """SELECT id, timestamp, 'knx_telegram' as event_type,
-                      group_address as entity_id, direction,
+                      group_address, group_address as entity_id, direction,
                       telegram_type, decoded_value, source_address,
                       linked_entity_id, linked_event_id, context_id,
-                      NULL as name
+                      dpt_type, raw_data, NULL as name
                FROM knx_telegrams
                WHERE group_address = ? AND timestamp BETWEEN ? AND ?
                ORDER BY timestamp""",

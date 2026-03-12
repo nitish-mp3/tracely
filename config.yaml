@@ -1,5 +1,5 @@
 name: "Tracely"
-version: "3.0.2"
+version: "3.0.3"
 slug: "tracely"
 description: "Offline causal event tracing for Home Assistant — see human-readable, searchable, interactive causal trees and timelines of everything that happened."
 url: "https://github.com/nitish-mp3/tracely"
