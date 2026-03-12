@@ -93,6 +93,58 @@ class HAClient:
             logger.exception("ha_client.fetch_states_error")
             return []
 
+    async def _ws_command(self, command: dict[str, Any]) -> dict[str, Any] | None:
+        """Send a one-shot WS command and return the result (needs active connection)."""
+        if not self._ws or self._ws.closed:
+            # Open a temporary session for the command
+            if not self._session or self._session.closed:
+                self._session = aiohttp.ClientSession()
+            try:
+                ws = await self._session.ws_connect(self._ws_url)
+                msg = await ws.receive_json()
+                if msg.get("type") != "auth_required":
+                    await ws.close()
+                    return None
+                await ws.send_json({"type": "auth", "access_token": self._token})
+                msg = await ws.receive_json()
+                if msg.get("type") != "auth_ok":
+                    await ws.close()
+                    return None
+                await ws.send_json({"id": 1, **command})
+                resp = await ws.receive_json()
+                await ws.close()
+                if resp.get("success"):
+                    return resp.get("result")
+                return None
+            except Exception:
+                logger.exception("ha_client.ws_command_error", command=command.get("type"))
+                return None
+        return None
+
+    async def fetch_entity_registry(self) -> list[dict[str, Any]]:
+        """Fetch entity registry via WS command."""
+        result = await self._ws_command({"type": "config/entity_registry/list"})
+        if isinstance(result, list):
+            logger.info("ha_client.entity_registry_fetched", count=len(result))
+            return result
+        return []
+
+    async def fetch_device_registry(self) -> list[dict[str, Any]]:
+        """Fetch device registry via WS command."""
+        result = await self._ws_command({"type": "config/device_registry/list"})
+        if isinstance(result, list):
+            logger.info("ha_client.device_registry_fetched", count=len(result))
+            return result
+        return []
+
+    async def fetch_area_registry(self) -> list[dict[str, Any]]:
+        """Fetch area registry via WS command."""
+        result = await self._ws_command({"type": "config/area_registry/list"})
+        if isinstance(result, list):
+            logger.info("ha_client.area_registry_fetched", count=len(result))
+            return result
+        return []
+
     def _http_base(self) -> str:
         """Derive HTTP base URL from the WS URL."""
         base = (

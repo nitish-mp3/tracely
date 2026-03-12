@@ -240,8 +240,9 @@ class Storage:
             conditions.append("event_type = ?")
             params.append(event_type)
         if integration:
-            conditions.append("integration = ?")
+            conditions.append("(LOWER(integration) = LOWER(?) OR LOWER(entity_id) LIKE ?)")
             params.append(integration)
+            params.append(f"%.{integration.lower()}_%")
         if from_ts is not None:
             conditions.append("timestamp >= ?")
             params.append(from_ts)

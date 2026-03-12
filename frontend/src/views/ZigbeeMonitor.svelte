@@ -117,8 +117,9 @@
     await loadEvents();
     unsubSSE = subscribeEvents(
       (event) => {
-        const int = (event.integration || '').toLowerCase();
-        if (int === protocol || int.includes('zigbee') || int.includes('z2m')) {
+        const integ = (event.integration || '').toLowerCase();
+        const eid = (event.entity_id || '').toLowerCase();
+        if (integ === protocol || integ.includes('zigbee') || integ.includes('z2m') || eid.includes('zigbee') || eid.includes('z2m')) {
           events = [event, ...events.slice(0, 499)];
           liveCount++;
           total++;
@@ -238,7 +239,8 @@
     </div>
   </div>
 
-  <!-- Sidebar: domain breakdown -->
+  <!-- Sidebar: domain breakdown (only when data exists) -->
+  {#if sortedDomains.length > 0}
   <div class="sidebar">
     <div class="sidebar-header">
       <h3 class="sidebar-title">Domains</h3>
@@ -251,11 +253,9 @@
           <span class="domain-count">{count}</span>
         </div>
       {/each}
-      {#if sortedDomains.length === 0}
-        <div class="sidebar-empty">No domains yet</div>
-      {/if}
     </div>
   </div>
+  {/if}
 </div>
 
 <style>

@@ -213,6 +213,20 @@ def _normalize_raw_event(raw_event: dict[str, Any]) -> EventRecord | None:
     area = entity_info.area if entity_info else ""
     integration = entity_info.integration if entity_info else ""
 
+    # Infer integration from entity_id if not set by registry
+    if not integration and entity_id:
+        eid_lower = entity_id.lower()
+        if "knx" in eid_lower:
+            integration = "knx"
+        elif "z2m" in eid_lower or "zigbee2mqtt" in eid_lower:
+            integration = "mqtt"
+        elif "zha" in eid_lower:
+            integration = "zha"
+        elif "esphome" in eid_lower:
+            integration = "esphome"
+        elif "hue" in eid_lower:
+            integration = "hue"
+
     # Human-readable name
     name = normalizer.label(event_type, data, entity_id)
 
@@ -525,6 +539,19 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("startup.entities_loaded", count=entity_map.count)
         except Exception:
             logger.exception("startup.entity_load_failed")
+
+        # Fetch registries to enrich entities with integration/area/device info
+        try:
+            areas = await ha_client.fetch_area_registry()
+            entity_map.load_areas(areas)
+            devices = await ha_client.fetch_device_registry()
+            entity_map.load_device_registry(devices)
+            entries = await ha_client.fetch_entity_registry()
+            entity_map.load_entity_registry(entries)
+            logger.info("startup.registries_loaded")
+        except Exception:
+            logger.exception("startup.registry_load_failed")
+
         await ha_client.start()
         logger.info("startup.ha_client_started")
 

@@ -8,6 +8,17 @@
   let loading = true;
   let error = null;
 
+  // Collapsible section states
+  let showNetwork = false;
+  let showAllNetwork = false;
+  let showAreas = true;
+  let showIntegrations = true;
+  let showDomains = false;
+  let showUnavailable = true;
+  let showOffline = false;
+
+  const NETWORK_PREVIEW = 5;
+
   onMount(async () => {
     try {
       data = await getSystemHealth();
@@ -58,6 +69,15 @@
     $selectedEntityTag = entityId;
   }
 
+  function toggleSection(name) {
+    if (name === 'network') showNetwork = !showNetwork;
+    else if (name === 'areas') showAreas = !showAreas;
+    else if (name === 'integrations') showIntegrations = !showIntegrations;
+    else if (name === 'domains') showDomains = !showDomains;
+    else if (name === 'unavailable') showUnavailable = !showUnavailable;
+    else if (name === 'offline') showOffline = !showOffline;
+  }
+
   $: sortedDeviceTypes = data?.device_types
     ? Object.entries(data.device_types).sort((a, b) => b[1] - a[1])
     : [];
@@ -69,6 +89,20 @@
   $: sortedAreas = data?.area_counts
     ? Object.entries(data.area_counts).sort((a, b) => b[1] - a[1])
     : [];
+
+  $: networkDevices = data?.network_info || [];
+  $: visibleNetwork = showAllNetwork ? networkDevices : networkDevices.slice(0, NETWORK_PREVIEW);
+  $: hiddenNetworkCount = networkDevices.length - NETWORK_PREVIEW;
+
+  // Compute availability percentage
+  $: availabilityPct = data ? Math.round(((data.total_entities - data.unavailable_count) / Math.max(data.total_entities, 1)) * 100) : 100;
+
+  // Top integrations for quick-glance cards (top 4)
+  $: topIntegrations = sortedDeviceTypes.slice(0, 4);
+
+  // Group network devices by state
+  $: networkConnected = networkDevices.filter(n => n.state === 'home' || n.state === 'on' || n.state === 'connected').length;
+  $: networkDisconnected = networkDevices.filter(n => n.state === 'not_home' || n.state === 'off' || n.state === 'disconnected').length;
 </script>
 
 <section class="health-view" aria-label="System Health">
@@ -83,7 +117,7 @@
       <p>{error}</p>
     </div>
   {:else if data}
-    <!-- KPI Cards -->
+    <!-- KPI Cards Row 1: Core status -->
     <div class="kpi-grid">
       <div class="kpi-card" class:kpi-ok={data.ws_connected} class:kpi-warn={!data.ws_connected}>
         <div class="kpi-icon">
@@ -106,6 +140,16 @@
         <div class="kpi-body">
           <span class="kpi-value">{data.total_entities}</span>
           <span class="kpi-label">Total Entities</span>
+        </div>
+      </div>
+
+      <div class="kpi-card" class:kpi-warn={data.unavailable_count > 0} class:kpi-ok={data.unavailable_count === 0}>
+        <div class="kpi-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14" /><path d="M22 4L12 14.01l-3-3" /></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-value">{availabilityPct}%</span>
+          <span class="kpi-label">Availability</span>
         </div>
       </div>
 
@@ -170,184 +214,233 @@
       </div>
     </div>
 
-    <!-- Network Info -->
-    {#if data.network_info && data.network_info.length > 0}
+    <!-- Top Integrations Quick Glance -->
+    {#if topIntegrations.length > 0}
+      <div class="top-integrations">
+        {#each topIntegrations as [name, count]}
+          <div class="top-integ-card">
+            <span class="top-integ-name">{name}</span>
+            <span class="top-integ-count">{count}</span>
+            <div class="top-integ-bar">
+              <div class="top-integ-fill" style="width: {Math.max(8, (count / data.total_entities) * 100)}%" />
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- Network Devices (collapsible, compact) -->
+    {#if networkDevices.length > 0}
       <div class="section-card">
-        <h3 class="section-title">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 10.55a7 7 0 019.08 0M5.53 12.61a3 3 0 013.95 0M8 15h.01M1 8.25a10 10 0 0114 0" /></svg>
-          Network Devices
-        </h3>
-        <div class="network-list">
-          {#each data.network_info as net}
-            <div class="network-row">
-              <div class="network-icon">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="8" rx="2" /><rect x="2" y="14" width="20" height="8" rx="2" /><path d="M6 6h.01M6 18h.01" /></svg>
-              </div>
-              <div class="network-info">
-                <span class="network-name">{net.friendly_name}</span>
-                <div class="network-details">
-                  {#if net.ip_address}
-                    <span class="net-detail"><span class="net-label">IP</span> {net.ip_address}</span>
-                  {/if}
-                  {#if net.mac_address}
-                    <span class="net-detail"><span class="net-label">MAC</span> {net.mac_address}</span>
-                  {/if}
-                  {#if net.ssid}
-                    <span class="net-detail"><span class="net-label">SSID</span> {net.ssid}</span>
-                  {/if}
-                  {#if net.signal_strength}
-                    <span class="net-detail"><span class="net-label">Signal</span> {net.signal_strength}</span>
-                  {/if}
-                </div>
-              </div>
-              <div class="network-state-wrap">
-                <span class="net-state" class:state-connected={net.state === 'home' || net.state === 'on' || net.state === 'connected'}
-                  class:state-disconnected={net.state === 'not_home' || net.state === 'off' || net.state === 'disconnected'}
-                  class:state-unavailable={net.state === 'unavailable'}>
+        <button class="section-header" on:click={() => toggleSection('network')} aria-expanded={showNetwork}>
+          <h3 class="section-title">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 10.55a7 7 0 019.08 0M5.53 12.61a3 3 0 013.95 0M8 15h.01M1 8.25a10 10 0 0114 0" /></svg>
+            Network Devices
+            <span class="section-count">{networkDevices.length}</span>
+            <span class="section-summary net-summary">
+              <span class="net-sum-item net-sum-ok">{networkConnected} online</span>
+              {#if networkDisconnected > 0}
+                <span class="net-sum-item net-sum-bad">{networkDisconnected} offline</span>
+              {/if}
+            </span>
+          </h3>
+          <svg class="chevron" class:chevron-open={showNetwork} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
+        </button>
+        {#if showNetwork}
+          <div class="network-table">
+            <div class="net-table-head">
+              <span class="nth-name">Device</span>
+              <span class="nth-ip">IP Address</span>
+              <span class="nth-integ">Integration</span>
+              <span class="nth-state">Status</span>
+            </div>
+            {#each visibleNetwork as net}
+              <div class="net-table-row">
+                <span class="nth-name" title={net.entity_id}>{net.friendly_name}</span>
+                <span class="nth-ip">{net.ip_address || '—'}</span>
+                <span class="nth-integ">{net.integration || '—'}</span>
+                <span class="nth-state">
+                  <span class="net-state-dot"
+                    class:dot-ok={net.state === 'home' || net.state === 'on' || net.state === 'connected'}
+                    class:dot-bad={net.state === 'not_home' || net.state === 'off' || net.state === 'disconnected' || net.state === 'unavailable'}
+                  ></span>
                   {net.state || '—'}
                 </span>
-                {#if net.integration}
-                  <span class="net-integration">{net.integration}</span>
-                {/if}
               </div>
-            </div>
-          {/each}
-        </div>
+            {/each}
+            {#if !showAllNetwork && hiddenNetworkCount > 0}
+              <button class="show-more-btn" on:click|stopPropagation={() => showAllNetwork = true}>
+                Show {hiddenNetworkCount} more devices
+              </button>
+            {/if}
+            {#if showAllNetwork && hiddenNetworkCount > 0}
+              <button class="show-more-btn" on:click|stopPropagation={() => showAllNetwork = false}>
+                Show less
+              </button>
+            {/if}
+          </div>
+        {/if}
       </div>
     {/if}
 
-    <!-- Area Breakdown -->
+    <!-- Area Breakdown (collapsible) -->
     {#if sortedAreas.length > 0}
       <div class="section-card">
-        <h3 class="section-title">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 6l6-4 6 4v7a1 1 0 01-1 1H3a1 1 0 01-1-1V6z" /><path d="M6 14V8h4v6" /></svg>
-          Areas ({sortedAreas.length})
-        </h3>
-        <div class="area-grid">
-          {#each sortedAreas as [name, count]}
-            <div class="area-chip">
-              <span class="area-name">{name}</span>
-              <span class="area-count">{count}</span>
-            </div>
-          {/each}
-        </div>
+        <button class="section-header" on:click={() => toggleSection('areas')} aria-expanded={showAreas}>
+          <h3 class="section-title">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 6l6-4 6 4v7a1 1 0 01-1 1H3a1 1 0 01-1-1V6z" /><path d="M6 14V8h4v6" /></svg>
+            Areas
+            <span class="section-count">{sortedAreas.length}</span>
+          </h3>
+          <svg class="chevron" class:chevron-open={showAreas} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
+        </button>
+        {#if showAreas}
+          <div class="area-grid">
+            {#each sortedAreas as [name, count]}
+              <div class="area-chip">
+                <span class="area-name">{name}</span>
+                <span class="area-count">{count}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/if}
 
-    <!-- Integrations Breakdown -->
+    <!-- Integrations Breakdown (collapsible) -->
     {#if sortedDeviceTypes.length > 0}
       <div class="section-card">
-        <h3 class="section-title">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1" y="3" width="14" height="10" rx="2" /><path d="M1 7h14" /></svg>
-          Integrations Breakdown
-        </h3>
-        <div class="integration-list">
-          {#each sortedDeviceTypes as [name, count]}
-            <div class="integration-row">
-              <span class="integration-name">{name}</span>
-              <div class="integration-bar-wrap">
-                <div class="integration-bar" style="width: {Math.max(4, (count / data.total_entities) * 100)}%" />
+        <button class="section-header" on:click={() => toggleSection('integrations')} aria-expanded={showIntegrations}>
+          <h3 class="section-title">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="1" y="3" width="14" height="10" rx="2" /><path d="M1 7h14" /></svg>
+            Integrations Breakdown
+            <span class="section-count">{sortedDeviceTypes.length}</span>
+          </h3>
+          <svg class="chevron" class:chevron-open={showIntegrations} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
+        </button>
+        {#if showIntegrations}
+          <div class="integration-list">
+            {#each sortedDeviceTypes as [name, count]}
+              <div class="integration-row">
+                <span class="integration-name">{name}</span>
+                <div class="integration-bar-wrap">
+                  <div class="integration-bar" style="width: {Math.max(4, (count / data.total_entities) * 100)}%" />
+                </div>
+                <span class="integration-count">{count}</span>
               </div>
-              <span class="integration-count">{count}</span>
-            </div>
-          {/each}
-        </div>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/if}
 
-    <!-- Domain Breakdown -->
+    <!-- Domain Breakdown (collapsible) -->
     {#if sortedDomains.length > 0}
       <div class="section-card">
-        <h3 class="section-title">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4h8M4 8h8M4 12h5" /></svg>
-          Domains ({sortedDomains.length})
-        </h3>
-        <div class="domain-grid">
-          {#each sortedDomains.slice(0, 30) as [name, count]}
-            <div class="domain-chip">
-              <DomainIcon domain={name} />
-              <span class="domain-name">{name}</span>
-              <span class="domain-count">{count}</span>
-            </div>
-          {/each}
-        </div>
+        <button class="section-header" on:click={() => toggleSection('domains')} aria-expanded={showDomains}>
+          <h3 class="section-title">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4h8M4 8h8M4 12h5" /></svg>
+            Domains
+            <span class="section-count">{sortedDomains.length}</span>
+          </h3>
+          <svg class="chevron" class:chevron-open={showDomains} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
+        </button>
+        {#if showDomains}
+          <div class="domain-grid">
+            {#each sortedDomains.slice(0, 30) as [name, count]}
+              <div class="domain-chip">
+                <DomainIcon domain={name} />
+                <span class="domain-name">{name}</span>
+                <span class="domain-count">{count}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/if}
 
-    <!-- Unavailable Entities -->
+    <!-- Unavailable Entities (collapsible) -->
     {#if data.unavailable.length > 0}
       <div class="section-card warn-card">
-        <h3 class="section-title">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 1L1 14h14L8 1zM8 6v4M8 12h.01" /></svg>
-          Unavailable Entities ({data.unavailable_count})
-        </h3>
-        <div class="unavail-list">
-          {#each data.unavailable as entity}
-            <button class="unavail-row" on:click={() => handleEntityClick(entity.entity_id)}>
-              <DomainIcon domain={entity.domain} />
-              <div class="unavail-info">
-                <span class="unavail-name">{entity.friendly_name}</span>
-                <span class="unavail-id">{entity.entity_id}</span>
-              </div>
-              <div class="unavail-tags">
-                <span class="unavail-state" class:state-unavailable={entity.state === 'unavailable'} class:state-unknown={entity.state === 'unknown'}>{entity.state}</span>
-                {#if entity.integration}
-                  <span class="unavail-integration">{entity.integration}</span>
-                {/if}
-                {#if entity.area}
-                  <span class="unavail-area">{entity.area}</span>
-                {/if}
-              </div>
-            </button>
-          {/each}
-        </div>
+        <button class="section-header" on:click={() => toggleSection('unavailable')} aria-expanded={showUnavailable}>
+          <h3 class="section-title">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 1L1 14h14L8 1zM8 6v4M8 12h.01" /></svg>
+            Unavailable Entities
+            <span class="section-count warn">{data.unavailable_count}</span>
+          </h3>
+          <svg class="chevron" class:chevron-open={showUnavailable} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
+        </button>
+        {#if showUnavailable}
+          <div class="unavail-list">
+            {#each data.unavailable as entity}
+              <button class="unavail-row" on:click|stopPropagation={() => handleEntityClick(entity.entity_id)}>
+                <DomainIcon domain={entity.domain} />
+                <div class="unavail-info">
+                  <span class="unavail-name">{entity.friendly_name}</span>
+                  <span class="unavail-id">{entity.entity_id}</span>
+                </div>
+                <div class="unavail-tags">
+                  <span class="unavail-state" class:state-unavailable={entity.state === 'unavailable'} class:state-unknown={entity.state === 'unknown'}>{entity.state}</span>
+                  {#if entity.integration}
+                    <span class="unavail-integration">{entity.integration}</span>
+                  {/if}
+                  {#if entity.area}
+                    <span class="unavail-area">{entity.area}</span>
+                  {/if}
+                </div>
+              </button>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/if}
 
-    <!-- Offline Periods -->
-    {#if data.offline_periods.length > 0}
-      <div class="section-card">
-        <h3 class="section-title">
-          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="7" /><path d="M8 4v4l2.5 1.5" /></svg>
-          Offline History ({data.offline_periods.length})
-        </h3>
-        <div class="offline-list">
-          {#each data.offline_periods as period}
-            <div class="offline-entry">
-              <div class="offline-dot" class:is-ongoing={!period.resumed_at} />
-              <div class="offline-info">
-                <div class="offline-times">
-                  <span class="offline-label">Down:</span>
-                  <span class="offline-time">{formatTime(period.stopped_at)}</span>
-                  {#if period.resumed_at}
-                    <svg class="offline-arrow" viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 4h10M8 1l3 3-3 3" /></svg>
-                    <span class="offline-label">Up:</span>
-                    <span class="offline-time">{formatTime(period.resumed_at)}</span>
-                  {/if}
-                </div>
-                <span class="offline-duration" class:duration-ongoing={!period.resumed_at}>
-                  {formatDuration(period.duration_ms)}
-                </span>
-              </div>
-            </div>
-          {/each}
-        </div>
-      </div>
-    {:else}
-      <div class="section-card">
+    <!-- Offline Periods (collapsible) -->
+    <div class="section-card">
+      <button class="section-header" on:click={() => toggleSection('offline')} aria-expanded={showOffline}>
         <h3 class="section-title">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="7" /><path d="M8 4v4l2.5 1.5" /></svg>
           Offline History
+          {#if data.offline_periods.length > 0}
+            <span class="section-count">{data.offline_periods.length}</span>
+          {/if}
         </h3>
-        <p class="empty-note">No offline periods recorded.</p>
-      </div>
-    {/if}
+        <svg class="chevron" class:chevron-open={showOffline} viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 5l3 3 3-3" /></svg>
+      </button>
+      {#if showOffline}
+        {#if data.offline_periods.length > 0}
+          <div class="offline-list">
+            {#each data.offline_periods as period}
+              <div class="offline-entry">
+                <div class="offline-dot" class:is-ongoing={!period.resumed_at} />
+                <div class="offline-info">
+                  <div class="offline-times">
+                    <span class="offline-label">Down:</span>
+                    <span class="offline-time">{formatTime(period.stopped_at)}</span>
+                    {#if period.resumed_at}
+                      <svg class="offline-arrow" viewBox="0 0 12 8" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 4h10M8 1l3 3-3 3" /></svg>
+                      <span class="offline-label">Up:</span>
+                      <span class="offline-time">{formatTime(period.resumed_at)}</span>
+                    {/if}
+                  </div>
+                  <span class="offline-duration" class:duration-ongoing={!period.resumed_at}>
+                    {formatDuration(period.duration_ms)}
+                  </span>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="empty-note">No offline periods recorded.</p>
+        {/if}
+      {/if}
+    </div>
   {/if}
 </section>
 
 <style>
   .health-view {
-    flex: 1; display: flex; flex-direction: column; gap: var(--sp-5);
+    flex: 1; display: flex; flex-direction: column; gap: var(--sp-4);
     padding: var(--sp-6); overflow-y: auto; max-width: 1000px;
     margin: 0 auto; width: 100%;
     animation: fadeIn var(--duration-normal) var(--ease-out);
@@ -367,12 +460,12 @@
 
   /* KPI Grid */
   .kpi-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: var(--sp-3);
   }
   .kpi-card {
     display: flex; align-items: center; gap: var(--sp-3);
-    padding: var(--sp-4); border-radius: var(--radius-lg);
+    padding: var(--sp-3) var(--sp-4); border-radius: var(--radius-lg);
     background: var(--color-surface); border: 1px solid var(--color-border);
     transition: all var(--duration-fast);
   }
@@ -385,30 +478,139 @@
   .kpi-card.kpi-warn { border-color: rgba(239,68,68,.3); }
   .kpi-card.kpi-warn .kpi-icon { color: var(--color-error, #ef4444); background: rgba(239,68,68,.1); }
   .kpi-icon {
-    width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
     border-radius: var(--radius-md); background: var(--color-surface-hover);
     color: var(--color-text-muted); flex-shrink: 0;
   }
-  .kpi-icon svg { width: 20px; height: 20px; }
-  .kpi-body { display: flex; flex-direction: column; gap: 2px; }
-  .kpi-value { font-size: var(--text-lg); font-weight: 700; color: var(--color-text); letter-spacing: -0.02em; }
+  .kpi-icon svg { width: 18px; height: 18px; }
+  .kpi-body { display: flex; flex-direction: column; gap: 1px; }
+  .kpi-value { font-size: var(--text-md); font-weight: 700; color: var(--color-text); letter-spacing: -0.02em; }
   .kpi-label { font-size: var(--text-2xs); color: var(--color-text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  /* Top Integrations Quick Glance */
+  .top-integrations {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: var(--sp-2);
+  }
+  .top-integ-card {
+    padding: var(--sp-3); border-radius: var(--radius-md);
+    background: var(--color-surface); border: 1px solid var(--color-border);
+    display: flex; flex-direction: column; gap: var(--sp-1);
+  }
+  .top-integ-name {
+    font-size: var(--text-xs); font-weight: 600; color: var(--color-text);
+    text-transform: capitalize; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .top-integ-count {
+    font-size: var(--text-lg); font-weight: 800; color: var(--color-primary);
+    font-family: var(--font-mono); letter-spacing: -0.02em;
+  }
+  .top-integ-bar {
+    height: 4px; border-radius: 2px; background: var(--color-surface-hover);
+    overflow: hidden; margin-top: 2px;
+  }
+  .top-integ-fill {
+    height: 100%; border-radius: 2px; background: var(--color-primary); opacity: 0.6;
+  }
 
   /* Section Cards */
   .section-card {
-    padding: var(--sp-4) var(--sp-5); border-radius: var(--radius-lg);
+    border-radius: var(--radius-lg);
     background: var(--color-surface); border: 1px solid var(--color-border);
+    overflow: hidden;
   }
   .warn-card { border-color: rgba(239,68,68,.25); }
+
+  /* Collapsible Section Header */
+  .section-header {
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100%; padding: var(--sp-3) var(--sp-4);
+    background: none; border: none; cursor: pointer;
+    transition: background var(--duration-fast);
+    text-align: left;
+  }
+  .section-header:hover { background: var(--color-surface-hover); }
   .section-title {
     display: flex; align-items: center; gap: var(--sp-2);
-    font-size: var(--text-md); font-weight: 700; margin-bottom: var(--sp-3);
-    letter-spacing: -0.01em;
+    font-size: var(--text-sm); font-weight: 700;
+    letter-spacing: -0.01em; margin: 0; color: var(--color-text);
   }
-  .section-title svg { width: 16px; height: 16px; color: var(--color-text-muted); }
+  .section-title svg { width: 14px; height: 14px; color: var(--color-text-muted); flex-shrink: 0; }
+  .section-count {
+    font-size: var(--text-2xs); font-weight: 700; font-family: var(--font-mono);
+    padding: 1px 7px; border-radius: var(--radius-full);
+    background: var(--color-primary-soft, rgba(99,102,241,.1)); color: var(--color-primary);
+  }
+  .section-count.warn {
+    background: rgba(239,68,68,.1); color: var(--color-error, #ef4444);
+  }
+  .section-summary {
+    display: flex; gap: var(--sp-2); margin-left: var(--sp-2);
+  }
+  .net-sum-item {
+    font-size: var(--text-2xs); font-weight: 600; padding: 1px 6px;
+    border-radius: var(--radius-full);
+  }
+  .net-sum-ok { color: var(--color-success); background: var(--color-success-soft); }
+  .net-sum-bad { color: var(--color-error, #ef4444); background: rgba(239,68,68,.1); }
+  .chevron {
+    width: 14px; height: 14px; color: var(--color-text-muted); flex-shrink: 0;
+    transition: transform var(--duration-fast) var(--ease-out);
+  }
+  .chevron-open { transform: rotate(180deg); }
+
+  /* Network Table (compact) */
+  .network-table { padding: 0 var(--sp-4) var(--sp-3); }
+  .net-table-head {
+    display: grid; grid-template-columns: 1fr 120px 100px 90px;
+    gap: var(--sp-2); padding: var(--sp-1) var(--sp-2);
+    font-size: var(--text-2xs); font-weight: 600; color: var(--color-text-muted);
+    text-transform: uppercase; letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .net-table-row {
+    display: grid; grid-template-columns: 1fr 120px 100px 90px;
+    gap: var(--sp-2); padding: var(--sp-2);
+    font-size: var(--text-xs); color: var(--color-text);
+    border-bottom: 1px solid var(--color-border);
+    transition: background var(--duration-fast);
+    align-items: center;
+  }
+  .net-table-row:last-of-type { border-bottom: none; }
+  .net-table-row:hover { background: var(--color-surface-hover); }
+  .nth-name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-weight: 500;
+  }
+  .nth-ip {
+    font-family: var(--font-mono); font-size: var(--text-2xs);
+    color: var(--color-text-secondary);
+  }
+  .nth-integ {
+    font-size: var(--text-2xs); color: var(--color-text-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .nth-state {
+    display: flex; align-items: center; gap: 4px;
+    font-size: var(--text-2xs); font-weight: 600;
+  }
+  .net-state-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    background: var(--color-text-muted);
+  }
+  .net-state-dot.dot-ok { background: var(--color-success); }
+  .net-state-dot.dot-bad { background: var(--color-error, #ef4444); }
+  .show-more-btn {
+    display: block; width: 100%; padding: var(--sp-2);
+    text-align: center; font-size: var(--text-xs); font-weight: 600;
+    color: var(--color-primary); background: none; border: none;
+    border-top: 1px solid var(--color-border); cursor: pointer;
+    transition: background var(--duration-fast);
+  }
+  .show-more-btn:hover { background: var(--color-surface-hover); }
 
   /* Integration Breakdown */
-  .integration-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .integration-list { display: flex; flex-direction: column; gap: var(--sp-1); padding: 0 var(--sp-4) var(--sp-3); }
   .integration-row {
     display: flex; align-items: center; gap: var(--sp-3);
     font-size: var(--text-sm);
@@ -418,11 +620,11 @@
     color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .integration-bar-wrap {
-    flex: 1; height: 8px; border-radius: 4px;
+    flex: 1; height: 6px; border-radius: 3px;
     background: var(--color-surface-hover); overflow: hidden;
   }
   .integration-bar {
-    height: 100%; border-radius: 4px;
+    height: 100%; border-radius: 3px;
     background: var(--color-primary); opacity: 0.7;
     transition: width var(--duration-normal) var(--ease-out);
   }
@@ -433,7 +635,7 @@
   }
 
   /* Unavailable Entities */
-  .unavail-list { display: flex; flex-direction: column; gap: 2px; }
+  .unavail-list { display: flex; flex-direction: column; gap: 2px; padding: 0 var(--sp-2) var(--sp-3); }
   .unavail-row {
     display: flex; align-items: center; gap: var(--sp-3);
     padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-md);
@@ -465,15 +667,20 @@
     font-size: var(--text-2xs); color: var(--color-text-muted);
     background: var(--color-surface-hover);
   }
+  .unavail-area {
+    padding: 2px 8px; border-radius: var(--radius-full);
+    font-size: var(--text-2xs); color: var(--color-text-muted);
+    background: var(--color-surface-hover);
+  }
 
   /* Offline Periods */
-  .offline-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+  .offline-list { display: flex; flex-direction: column; gap: var(--sp-2); padding: 0 var(--sp-4) var(--sp-3); }
   .offline-entry {
     display: flex; align-items: flex-start; gap: var(--sp-3);
     padding: var(--sp-2) 0;
   }
   .offline-dot {
-    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; margin-top: 4px;
+    width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 4px;
     background: var(--color-text-muted);
   }
   .offline-dot.is-ongoing {
@@ -498,54 +705,10 @@
   }
   .offline-duration.duration-ongoing { color: var(--color-error, #ef4444); }
 
-  .empty-note { color: var(--color-text-muted); font-size: var(--text-sm); }
-
-  /* Network Devices */
-  .network-list { display: flex; flex-direction: column; gap: var(--sp-2); }
-  .network-row {
-    display: flex; align-items: center; gap: var(--sp-3);
-    padding: var(--sp-3); border-radius: var(--radius-md);
-    border: 1px solid var(--color-border); background: var(--color-surface);
-    transition: all var(--duration-fast);
-  }
-  .network-row:hover { border-color: var(--color-border-hover); background: var(--color-surface-hover); }
-  .network-icon {
-    width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
-    border-radius: var(--radius-md); background: var(--color-primary-soft, rgba(99,102,241,.1));
-    color: var(--color-primary); flex-shrink: 0;
-  }
-  .network-icon svg { width: 18px; height: 18px; }
-  .network-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .network-name {
-    font-size: var(--text-sm); font-weight: 600; color: var(--color-text);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .network-details { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
-  .net-detail {
-    font-size: var(--text-2xs); color: var(--color-text-secondary);
-    font-family: var(--font-mono);
-  }
-  .net-label {
-    font-weight: 600; color: var(--color-text-muted); text-transform: uppercase;
-    font-size: var(--text-2xs); margin-right: 2px;
-  }
-  .network-state-wrap { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; flex-shrink: 0; }
-  .net-state {
-    padding: 2px 8px; border-radius: var(--radius-full);
-    font-size: var(--text-2xs); font-weight: 600;
-    color: var(--color-text-muted); background: var(--color-surface-hover);
-  }
-  .net-state.state-connected { color: var(--color-success); background: var(--color-success-soft); }
-  .net-state.state-disconnected { color: var(--color-error, #ef4444); background: rgba(239,68,68,.1); }
-  .net-state.state-unavailable { color: var(--color-error, #ef4444); background: rgba(239,68,68,.1); }
-  .net-integration {
-    font-size: var(--text-2xs); color: var(--color-text-muted);
-    padding: 1px 6px; border-radius: var(--radius-full);
-    background: var(--color-surface-hover);
-  }
+  .empty-note { color: var(--color-text-muted); font-size: var(--text-sm); padding: 0 var(--sp-4) var(--sp-3); }
 
   /* Area Breakdown */
-  .area-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+  .area-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: 0 var(--sp-4) var(--sp-3); }
   .area-chip {
     display: flex; align-items: center; gap: var(--sp-2);
     padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-full);
@@ -562,7 +725,7 @@
   }
 
   /* Domain Breakdown */
-  .domain-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+  .domain-grid { display: flex; flex-wrap: wrap; gap: var(--sp-2); padding: 0 var(--sp-4) var(--sp-3); }
   .domain-chip {
     display: flex; align-items: center; gap: var(--sp-1);
     padding: 3px var(--sp-2); border-radius: var(--radius-full);
@@ -576,20 +739,18 @@
     font-weight: 600; color: var(--color-text-muted);
   }
 
-  /* Unavailable area tag */
-  .unavail-area {
-    padding: 2px 8px; border-radius: var(--radius-full);
-    font-size: var(--text-2xs); color: var(--color-text-muted);
-    background: var(--color-surface-hover);
-  }
-
   @media (max-width: 640px) {
     .health-view { padding: var(--sp-4) var(--sp-3); gap: var(--sp-3); }
     .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+    .top-integrations { grid-template-columns: repeat(2, 1fr); }
     .integration-name { width: 100px; }
     .offline-times { flex-direction: column; align-items: flex-start; }
+    .net-table-head, .net-table-row { grid-template-columns: 1fr 90px 80px 70px; }
+    .section-summary { display: none; }
   }
   @media (max-width: 400px) {
     .kpi-grid { grid-template-columns: 1fr; }
+    .net-table-head, .net-table-row { grid-template-columns: 1fr 70px; }
+    .nth-ip, .nth-integ { display: none; }
   }
 </style>

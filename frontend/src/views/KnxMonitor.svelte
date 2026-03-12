@@ -277,7 +277,9 @@
     // Also listen to main SSE for KNX entity state changes
     unsubActivitySSE = subscribeEvents(
       (event) => {
-        if (event.integration === 'knx' || (event.entity_id && event.entity_id.includes('knx'))) {
+        const integ = (event.integration || '').toLowerCase();
+        const eid = (event.entity_id || '').toLowerCase();
+        if (integ === 'knx' || eid.includes('knx')) {
           activityEvents = [event, ...activityEvents.slice(0, 499)];
           activityTotal++;
         }
@@ -525,7 +527,8 @@
     {/if}
   </div>
 
-  <!-- ── Right: GA explorer ──────────────────────────── -->
+  <!-- ── Right: GA explorer (only shown when there's data) ──── -->
+  {#if groupAddresses.length > 0}
   <div class="ga-sidebar">
     <div class="sidebar-header">
       <h3 class="sidebar-title">Group Addresses</h3>
@@ -553,11 +556,9 @@
           </div>
         </button>
       {/each}
-      {#if groupAddresses.length === 0}
-        <div class="sidebar-empty">No group addresses seen yet</div>
-      {/if}
     </div>
   </div>
+  {/if}
 
 </div>
 
