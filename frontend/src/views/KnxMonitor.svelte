@@ -726,10 +726,20 @@
                 <td class="col-source">{tg.source_address ?? '—'}</td>
                 <td class="col-entity">
                   {#if tg.linked_entity_id}
-                    <button class="entity-link" title="Filter by {tg.linked_entity_id}"
-                      on:click|stopPropagation={() => { filterEntity = tg.linked_entity_id; applyFilters(); addToast(`Filtered by entity`, 'info', 2000); }}>
-                      {tg.linked_entity_id.split('.').pop()}
-                    </button>
+                    <div class="entity-cell">
+                      <button class="entity-link" title="Filter activity by {tg.linked_entity_id}"
+                        on:click|stopPropagation={() => { filterEntity = tg.linked_entity_id; activeTab = 'activity'; applyFilters(); addToast(`Filtered by entity`, 'info', 2000); }}>
+                        {tg.linked_entity_id.split('.').pop()}
+                      </button>
+                      {#if tg.linked_entity_name}
+                        <div class="entity-name-sub">{tg.linked_entity_name}</div>
+                      {/if}
+                      <a class="entity-ha-btn" href="http://{window.location.hostname}:8123/history?entity_id={tg.linked_entity_id}"
+                        target="_blank" rel="noopener" title="Open entity history in HA" aria-label="Open {tg.linked_entity_id} in Home Assistant"
+                        on:click|stopPropagation>
+                        HA↗
+                      </a>
+                    </div>
                   {:else}
                     <span class="dim">—</span>
                   {/if}
@@ -942,11 +952,28 @@
         {#if selectedTelegram.linked_entity_id}
           <div class="tg-detail-cell tg-entity-cell">
             <div class="tg-detail-label">HA Entity</div>
+            {#if selectedTelegram.linked_entity_name}
+              <div class="tg-entity-friendly">{selectedTelegram.linked_entity_name}</div>
+            {/if}
             <div class="tg-entity-row">
               <span class="tg-detail-value mono">{selectedTelegram.linked_entity_id}</span>
+            </div>
+            <div class="tg-entity-actions">
               <button class="tg-entity-filter-btn"
                 on:click={() => { closeTelegramPanel(); filterEntity = selectedTelegram.linked_entity_id; activeTab = 'activity'; applyFilters(); addToast(`Filtered by entity: ${selectedTelegram.linked_entity_id}`, 'info', 2000); }}
-                title="Filter activity by this entity">Filter ↗</button>
+                title="Show activity filtered to this entity">Activity ↗</button>
+              <a class="tg-entity-ha-link"
+                href="http://{window.location.hostname}:8123/history?entity_id={selectedTelegram.linked_entity_id}"
+                target="_blank" rel="noopener"
+                title="Open entity history in Home Assistant">
+                Open in HA ↗
+              </a>
+              <a class="tg-entity-ha-link tg-entity-ha-link--states"
+                href="http://{window.location.hostname}:8123/developer-tools/state?entity_id={selectedTelegram.linked_entity_id}"
+                target="_blank" rel="noopener"
+                title="View entity state in HA Developer Tools">
+                State ↗
+              </a>
             </div>
           </div>
         {/if}
@@ -1417,6 +1444,63 @@
     transition: background 0.15s;
   }
   .entity-link:hover { background: var(--color-accent-dim, rgba(99,102,241,0.12)); }
+
+  /* Entity cell in table */
+  .entity-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-items: flex-start;
+  }
+  .entity-name-sub {
+    font-size: 10px;
+    color: var(--color-text-muted);
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .entity-ha-btn {
+    font-size: 10px;
+    color: var(--color-text-muted);
+    text-decoration: none;
+    padding: 1px 4px;
+    border-radius: 3px;
+    border: 1px solid var(--color-border);
+    line-height: 1.4;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .entity-ha-btn:hover { color: var(--color-accent, #6366f1); border-color: var(--color-accent, #6366f1); }
+
+  /* Modal entity actions */
+  .tg-entity-friendly {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--color-text);
+    margin-bottom: 4px;
+  }
+  .tg-entity-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .tg-entity-ha-link {
+    font-size: 11.5px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--color-accent, #6366f1);
+    color: var(--color-accent, #6366f1);
+    text-decoration: none;
+    font-weight: 500;
+    transition: background 0.15s;
+  }
+  .tg-entity-ha-link:hover { background: var(--color-accent-dim, rgba(99,102,241,0.12)); }
+  .tg-entity-ha-link--states {
+    border-color: var(--color-border);
+    color: var(--color-text-muted);
+  }
+  .tg-entity-ha-link--states:hover { border-color: var(--color-accent, #6366f1); color: var(--color-accent, #6366f1); }
 
   .raw-bytes {
     font-family: ui-monospace, monospace;

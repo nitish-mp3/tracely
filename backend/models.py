@@ -117,6 +117,7 @@ class KnxTelegramResponse(BaseModel):
     decoded_value: str | None = None
     dpt_type: str | None = None
     linked_entity_id: str | None = None
+    linked_entity_name: str | None = None
     linked_event_id: str | None = None
     context_id: str | None = None
 

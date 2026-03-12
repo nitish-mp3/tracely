@@ -398,6 +398,7 @@ def _knx_to_response(row: dict[str, Any]) -> KnxTelegramResponse:
         decoded_value=row.get("decoded_value"),
         dpt_type=row.get("dpt_type"),
         linked_entity_id=row.get("linked_entity_id"),
+        linked_entity_name=entity_map.get_friendly_name(row.get("linked_entity_id")) or None,
         linked_event_id=row.get("linked_event_id"),
         context_id=row.get("context_id"),
     )
@@ -469,9 +470,6 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
         logger.warning("knx.dropped_no_ga", data_keys=list(data.keys()), source=event_type)
         return
 
-    logger.info("knx.received", ga=ga, direction=data.get("direction"),
-                type=data.get("telegramtype"), source=event_type)
-
     telegram_type = data.get("telegramtype") or data.get("telegram_type") or "Unknown"
     direction = data.get("direction", "Incoming")
     source = data.get("source") or data.get("source_address")
@@ -518,8 +516,22 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
     # ── GA friendly name (only available from knx/subscribe_telegrams) ──────
     destination_text: str | None = data.get("destination_text") or None
 
-    # ── Entity linkage ───────────────────────────────────────────────────────
+    # ── Entity linkage (resolved early so it appears in the received log) ───
     linked_entity: str | None = entity_map.find_entity_by_attribute("knx", ga)
+    linked_entity_name: str = entity_map.get_friendly_name(linked_entity) if linked_entity else ""
+
+    logger.info(
+        "knx.received",
+        ga=ga,
+        ga_name=destination_text or "",
+        direction=direction,
+        type=telegram_type,
+        source=event_type,
+        entity=linked_entity or "",
+        entity_name=linked_entity_name,
+        value=decoded_str or (f"0x{raw_hex.upper()}" if raw_hex else ""),
+        dpt=dpt_type or "",
+    )
 
     # ── Deduplication ID ─────────────────────────────────────────────────────
     # Use a content-based hash so the same physical telegram arriving via
@@ -551,7 +563,17 @@ async def _process_knx_event(raw_event: dict[str, Any]) -> None:
     try:
         await storage.insert_knx_telegram(telegram)
         _knx_diag["stored"] += 1
-        logger.info("knx.stored", ga=ga, id=telegram_id)
+        logger.info(
+            "knx.stored",
+            ga=ga,
+            id=telegram_id,
+            entity=linked_entity or "",
+            entity_name=linked_entity_name,
+            value=decoded_str or (f"0x{raw_hex.upper()}" if raw_hex else ""),
+            dpt=dpt_type or "",
+            direction=direction,
+            type=telegram_type,
+        )
     except Exception as exc:
         _knx_diag["last_error"] = str(exc)
         logger.exception("knx.insert_error", ga=ga)
