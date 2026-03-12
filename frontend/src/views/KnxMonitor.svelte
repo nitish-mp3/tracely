@@ -75,6 +75,22 @@
   let hasMore = true;
   let liveCount = 0;   // telegrams received via SSE since last reload
 
+  // KNX setup diagnostics
+  let diagResult = null;
+  let diagLoading = false;
+  let diagError = null;
+  async function checkDiagnostics() {
+    diagLoading = true; diagError = null;
+    try {
+      const res = await fetch('/api/knx/diagnostics');
+      diagResult = await res.json();
+    } catch (e) {
+      diagError = e.message;
+    } finally {
+      diagLoading = false;
+    }
+  }
+
   // Summary stats (derived)
   $: totalGAs = groupAddresses.length;
   $: incoming = telegrams.filter(t => t.direction === 'Incoming').length;
@@ -288,7 +304,7 @@
   }
 
   function decodeValue(v) {
-    if (v === null || v === undefined) return '—';
+    if (v === null || v === undefined) return null;
     try {
       const p = JSON.parse(v);
       if (typeof p === 'boolean') return p ? 'ON' : 'OFF';
@@ -298,6 +314,49 @@
     } catch {
       return String(v);
     }
+  }
+
+  // Returns { text, style } for the value display block
+  function getTelegramValue(tg) {
+    const type = tg.telegram_type || '';
+    const decoded = decodeValue(tg.decoded_value);
+    if (type === 'GroupValueRead') {
+      return { text: 'Read Request', style: 'read', isLabel: true };
+    }
+    if (type === 'GroupValueResponse') {
+      return {
+        text: decoded ?? '—',
+        style: decoded !== null ? 'response' : 'empty',
+        isLabel: decoded === null,
+      };
+    }
+    if (type === 'GroupValueWrite') {
+      return {
+        text: decoded ?? '—',
+        style: decoded !== null ? 'write' : 'empty',
+        isLabel: decoded === null,
+      };
+    }
+    return { text: decoded ?? '—', style: 'neutral', isLabel: decoded === null };
+  }
+
+  // Look up GA friendly name from our group address list
+  function gaName(ga) {
+    const found = groupAddresses.find(g => g.group_address === ga);
+    return found?.friendly_name || null;
+  }
+
+  // Recent history for a given GA from already-loaded telegrams list (last 8)
+  function gaHistory(ga) {
+    return telegrams.filter(t => t.group_address === ga).slice(0, 8);
+  }
+
+  // Copy to clipboard helper
+  async function copyToClipboard(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      addToast(`Copied: ${text}`, 'info', 1500);
+    } catch { addToast('Copy failed', 'error', 2000); }
   }
 
   function applyFilters() {
@@ -477,13 +536,99 @@
           <span>Loading KNX telegrams…</span>
         </div>
       {:else if telegrams.length === 0}
-        <div class="empty-state">
-          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-            <circle cx="10" cy="24" r="4"/><circle cx="24" cy="10" r="4"/><circle cx="38" cy="24" r="4"/><circle cx="24" cy="38" r="4"/>
-            <path d="M14 24h20M24 14v20"/>
-          </svg>
-          <p>No KNX telegrams yet.</p>
-          <span>Telegrams appear after the addon backend is restarted with the latest code. Check the <a class="diag-link" href="/api/knx/diagnostics" target="_blank" rel="noopener">Diagnostics</a> chip above to verify events are being received.</span>
+        <div class="setup-guide">
+          <div class="setup-guide-header">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="10" cy="10" r="8"/><path d="M10 6v4l3 3"/></svg>
+            <div>
+              <div class="setup-guide-title">No KNX bus telegrams received yet</div>
+              <div class="setup-guide-sub">Telegrams from your KNX bus will appear here in real-time once the feed is enabled.</div>
+            </div>
+          </div>
+
+          <div class="setup-steps">
+            <div class="setup-step">
+              <span class="step-n">1</span>
+              <div class="step-body">
+                <strong>Enable <code>fire_event</code> in your HA KNX config</strong>
+                <p>Add the following to your <code>configuration.yaml</code> and restart Home Assistant:</p>
+                <pre class="code-block">knx:
+  fire_event: true
+  # Optional: restrict to specific GA ranges
+  # fire_event_filter:
+  #   - "0/*"
+  #   - "1/*"</pre>
+                <p class="step-note">Without <code>fire_event: true</code>, Home Assistant does not emit <code>knx_event</code> messages on the event bus — no telegrams will be captured.</p>
+              </div>
+            </div>
+            <div class="setup-step">
+              <span class="step-n">2</span>
+              <div class="step-body">
+                <strong>Restart Home Assistant</strong>
+                <p>Go to Settings → System → Restart to apply the config change.</p>
+              </div>
+            </div>
+            <div class="setup-step">
+              <span class="step-n">3</span>
+              <div class="step-body">
+                <strong>Verify in HA Developer Tools</strong>
+                <p>Go to Developer Tools → Events, subscribe to <code>knx_event</code>, then press a KNX button or switch. You should see events with <code>source</code>, <code>destination</code>, <code>telegramtype</code>, and <code>direction</code> fields.</p>
+              </div>
+            </div>
+            <div class="setup-step">
+              <span class="step-n">4</span>
+              <div class="step-body">
+                <strong>Restart the Tracely addon</strong>
+                <p>After HA restart, restart this addon to reconnect to the HA WebSocket. New telegrams will then stream in automatically.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="setup-actions">
+            <button class="btn-check-status" on:click={checkDiagnostics} disabled={diagLoading}>
+              {#if diagLoading}Checking…{:else}Check Live Status{/if}
+            </button>
+            <a class="btn-diag-link" href="/api/knx/diagnostics" target="_blank" rel="noopener">Open Raw Diagnostics ↗</a>
+          </div>
+
+          {#if diagError}
+            <div class="diag-error">Error: {diagError}</div>
+          {/if}
+
+          {#if diagResult}
+            <div class="diag-result">
+              <div class="diag-row">
+                <span class="diag-key">HA WebSocket</span>
+                <span class="diag-val" class:ok={diagResult.ws_connected} class:bad={!diagResult.ws_connected}>
+                  {diagResult.ws_connected ? '✓ Connected' : '✗ Disconnected'}
+                </span>
+              </div>
+              <div class="diag-row">
+                <span class="diag-key">Events received from HA</span>
+                <span class="diag-val" class:bad={diagResult.received === 0}>{diagResult.received}</span>
+              </div>
+              <div class="diag-row">
+                <span class="diag-key">Stored to DB</span>
+                <span class="diag-val">{diagResult.stored}</span>
+              </div>
+              <div class="diag-row">
+                <span class="diag-key">Dropped (no group address)</span>
+                <span class="diag-val" class:bad={diagResult.dropped_no_ga > 0}>{diagResult.dropped_no_ga}</span>
+              </div>
+              {#if diagResult.last_error}
+                <div class="diag-row">
+                  <span class="diag-key">Last error</span>
+                  <span class="diag-val bad">{diagResult.last_error}</span>
+                </div>
+              {/if}
+              {#if diagResult.received === 0}
+                <div class="diag-hint">⚠ HA has sent 0 <code>knx_event</code> messages. Check that <code>fire_event: true</code> is set and HA has been restarted.</div>
+              {:else if diagResult.stored === 0}
+                <div class="diag-hint">⚠ Events received but none stored. Check the <code>dropped_no_ga</code> count and the last error above.</div>
+              {:else}
+                <div class="diag-hint ok">✓ Pipeline working — try refreshing this view or waiting a few seconds.</div>
+              {/if}
+            </div>
+          {/if}
         </div>
       {:else}
         <table class="tg-table" aria-label="KNX Telegrams">
@@ -590,7 +735,8 @@
                 on:click={() => handleActivityEventClick(event)}
                 on:viewin={(e) => { $currentView = e.detail; }}
                 on:tagclick={(e) => { filterEntity = e.detail; applyFilters(); addToast(`Filtered by entity: ${e.detail}`, 'info', 2500); }}
-                on:integrationclick={(e) => addToast(`Integration filter: ${e.detail}`, 'info', 2000)}
+                on:integrationclick={(e) => { addToast(`Showing integration: ${e.detail}`, 'info', 2000); }}
+                on:domainclick={(e) => { addToast(`Domain: ${e.detail} — use entity filter to narrow results`, 'info', 2500); }}
               />
               {#if getKnxDetails(event).length > 0}
                 <div class="proto-details">
@@ -654,6 +800,7 @@
 
 <!-- ── Telegram detail modal ─────────────────────── -->
 {#if selectedTelegram}
+  {@const tval = getTelegramValue(selectedTelegram)}
   <!-- svelte-ignore a11y-click-events-have-key-events -->
   <div class="tg-overlay" on:click={closeTelegramPanel} role="button" tabindex="0" aria-label="Close" />
   <div class="tg-modal" role="dialog" aria-label="KNX Telegram detail">
@@ -664,14 +811,16 @@
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
           <circle cx="3" cy="8" r="1.5"/><circle cx="13" cy="8" r="1.5"/><path d="M4.5 8h7"/>
         </svg>
-        <span class="tg-modal-title">KNX Telegram</span>
+        <div>
+          <span class="tg-modal-title">KNX Telegram</span>
+          <span class="tg-modal-subtitle">{fmtDateTime(selectedTelegram.timestamp)} · {timeAgo(selectedTelegram.timestamp)}</span>
+        </div>
       </div>
       <div class="tg-modal-header-right">
-        <span class="tg-modal-time">{fmtDateTime(selectedTelegram.timestamp)} ({timeAgo(selectedTelegram.timestamp)})</span>
         {#if selectedTelegram.direction === 'Outgoing'}
-          <span class="tg-dir-pill outgoing">OUTGOING</span>
+          <span class="tg-dir-pill outgoing">↑ OUTGOING</span>
         {:else}
-          <span class="tg-dir-pill incoming">INCOMING</span>
+          <span class="tg-dir-pill incoming">↓ INCOMING</span>
         {/if}
         <button class="close-btn" on:click={closeTelegramPanel} aria-label="Close">
           <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2l8 8M10 2l-8 8"/></svg>
@@ -679,80 +828,146 @@
       </div>
     </div>
 
-    <!-- Source → Destination row -->
-    <div class="tg-addr-row">
-      <div class="tg-addr-block">
-        <div class="tg-addr-label">Source</div>
-        <div class="tg-addr-value">{selectedTelegram.source_address ?? '—'}</div>
-        {#if selectedTelegram.direction === 'Outgoing'}
-          <div class="tg-addr-sub">Home Assistant</div>
+    <!-- Scrollable body -->
+    <div class="tg-modal-body">
+
+      <!-- Source → Destination row -->
+      <div class="tg-addr-row">
+        <div class="tg-addr-block">
+          <div class="tg-addr-label">SOURCE</div>
+          <div class="tg-addr-value-row">
+            <span class="tg-addr-value">{selectedTelegram.source_address ?? '—'}</span>
+            {#if selectedTelegram.source_address}
+              <button class="tg-copy-btn" on:click|stopPropagation={() => copyToClipboard(selectedTelegram.source_address)} title="Copy">
+                <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="4" y="4" width="8" height="8" rx="1.5"/><path d="M2 10V2h8"/></svg>
+              </button>
+            {/if}
+          </div>
+          <div class="tg-addr-sub">
+            {selectedTelegram.direction === 'Outgoing' ? 'Home Assistant' : 'KNX Device'}
+          </div>
+        </div>
+        <div class="tg-addr-arrow">
+          <svg viewBox="0 0 32 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <path d="M0 5h28M24 1l5 4-5 4"/>
+          </svg>
+        </div>
+        <div class="tg-addr-block dest">
+          <div class="tg-addr-label">DESTINATION</div>
+          <div class="tg-addr-value-row">
+            <span class="tg-addr-value">{selectedTelegram.group_address ?? '—'}</span>
+            {#if selectedTelegram.group_address}
+              <button class="tg-copy-btn" on:click|stopPropagation={() => copyToClipboard(selectedTelegram.group_address)} title="Copy">
+                <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="4" y="4" width="8" height="8" rx="1.5"/><path d="M2 10V2h8"/></svg>
+              </button>
+            {/if}
+          </div>
+          {#if gaName(selectedTelegram.group_address)}
+            <div class="tg-addr-sub ga-name">{gaName(selectedTelegram.group_address)}</div>
+          {:else if selectedTelegram.linked_entity_id}
+            <div class="tg-addr-sub">{selectedTelegram.linked_entity_id.split('.').pop().replace(/_/g,' ')}</div>
+          {/if}
+        </div>
+      </div>
+
+      <!-- Value highlight — styled by telegram type -->
+      <div class="tg-value-block tg-value-{tval.style}" class:is-label={tval.isLabel}>
+        <div class="tg-value-label">
+          {tval.style === 'read' ? 'REQUEST' : tval.style === 'response' ? 'RESPONSE VALUE' : tval.style === 'write' ? 'WRITE VALUE' : 'VALUE'}
+        </div>
+        <div class="tg-value-display">{tval.text}</div>
+        {#if selectedTelegram.dpt_type && selectedTelegram.dpt_type !== '—'}
+          <div class="tg-dpt-badge">{selectedTelegram.dpt_type}</div>
         {/if}
       </div>
-      <div class="tg-addr-arrow">
-        <svg viewBox="0 0 24 8" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-          <path d="M0 4h20M16 1l4 3-4 3"/>
-        </svg>
-      </div>
-      <div class="tg-addr-block">
-        <div class="tg-addr-label">Destination</div>
-        <div class="tg-addr-value">{selectedTelegram.group_address ?? '—'}</div>
+
+      <!-- Details grid: Type + DPT + Entity -->
+      <div class="tg-details-grid">
+        <div class="tg-detail-cell">
+          <div class="tg-detail-label">Type</div>
+          <div class="tg-detail-value bold">{selectedTelegram.telegram_type ?? '—'}</div>
+        </div>
+        <div class="tg-detail-cell">
+          <div class="tg-detail-label">DPT</div>
+          <div class="tg-detail-value bold">
+            {#if selectedTelegram.dpt_type && selectedTelegram.dpt_type !== '—'}
+              {selectedTelegram.dpt_type}
+            {:else}
+              <span class="tg-no-dpt" title="Set up KNX entity in HA to get DPT info">Not available</span>
+            {/if}
+          </div>
+        </div>
         {#if selectedTelegram.linked_entity_id}
-          <div class="tg-addr-sub">{selectedTelegram.linked_entity_id.split('.').pop()}</div>
+          <div class="tg-detail-cell tg-entity-cell">
+            <div class="tg-detail-label">HA Entity</div>
+            <div class="tg-entity-row">
+              <span class="tg-detail-value mono">{selectedTelegram.linked_entity_id}</span>
+              <button class="tg-entity-filter-btn"
+                on:click={() => { closeTelegramPanel(); filterEntity = selectedTelegram.linked_entity_id; activeTab = 'activity'; applyFilters(); addToast(`Filtered by entity: ${selectedTelegram.linked_entity_id}`, 'info', 2000); }}
+                title="Filter activity by this entity">Filter ↗</button>
+            </div>
+          </div>
         {/if}
       </div>
-    </div>
 
-    <!-- Value highlight -->
-    <div class="tg-value-block">
-      <div class="tg-value-label">Value</div>
-      <div class="tg-value-display">{decodeValue(selectedTelegram.decoded_value)}</div>
-    </div>
+      <!-- Payload bytes -->
+      <div class="tg-payload-block">
+        <div class="tg-detail-label">Payload (hex)</div>
+        {#if selectedTelegram.raw_data}
+          <div class="tg-hex-row">
+            {#each hexGroup(selectedTelegram.raw_data) as byte, i}
+              <span class="tg-hex-byte" title="byte {i}: 0x{byte} = {parseInt(byte,16)}">{byte}</span>
+            {/each}
+            <span class="tg-hex-decimal">= {parseInt(selectedTelegram.raw_data, 16)} decimal</span>
+          </div>
+        {:else}
+          <div class="tg-payload-empty">
+            {selectedTelegram.telegram_type === 'GroupValueRead' ? 'No payload — read requests carry no data' : 'no payload'}
+          </div>
+        {/if}
+      </div>
 
-    <!-- Details grid -->
-    <div class="tg-details-grid">
-      <div class="tg-detail-cell">
-        <div class="tg-detail-label">Type</div>
-        <div class="tg-detail-value bold">{selectedTelegram.telegram_type ?? '—'}</div>
-      </div>
-      <div class="tg-detail-cell">
-        <div class="tg-detail-label">DPT</div>
-        <div class="tg-detail-value bold">{selectedTelegram.dpt_type ?? '—'}</div>
-      </div>
-      {#if selectedTelegram.linked_entity_id}
-        <div class="tg-detail-cell" style="grid-column: 1/-1">
-          <div class="tg-detail-label">HA Entity</div>
-          <div class="tg-detail-value mono">{selectedTelegram.linked_entity_id}</div>
+      <!-- Recent history for this GA -->
+      {#if gaHistory(selectedTelegram.group_address).length > 1}
+        <div class="tg-history-block">
+          <div class="tg-detail-label">Recent activity on {selectedTelegram.group_address}</div>
+          <div class="tg-history-list">
+            {#each gaHistory(selectedTelegram.group_address) as h}
+              {@const hval = getTelegramValue(h)}
+              <div class="tg-history-row" class:active={h.id === selectedTelegram.id} on:click={() => selectedTelegram = h} role="button" tabindex="0" on:keydown={(e) => e.key==='Enter' && (selectedTelegram=h)}>
+                <span class="tg-hist-dir tg-hist-{h.direction?.toLowerCase()}">{h.direction === 'Incoming' ? '↓' : '↑'}</span>
+                <span class="tg-hist-type">{tgTypeShort(h.telegram_type)}</span>
+                <span class="tg-hist-val tg-hist-val-{hval.style}">{hval.text}</span>
+                <span class="tg-hist-time">{timeAgo(h.timestamp)}</span>
+              </div>
+            {/each}
+          </div>
         </div>
       {/if}
-    </div>
 
-    <!-- Payload bytes -->
-    <div class="tg-payload-block">
-      <div class="tg-detail-label">Payload</div>
-      {#if selectedTelegram.raw_data}
-        <div class="tg-hex-row">
-          {#each hexGroup(selectedTelegram.raw_data) as byte}
-            <span class="tg-hex-byte">{byte}</span>
-          {/each}
-        </div>
-      {:else}
-        <div class="tg-payload-empty">no payload</div>
-      {/if}
-    </div>
+    </div><!-- /.tg-modal-body -->
 
     <!-- Actions: GA flow + navigation -->
     <div class="tg-modal-footer">
-      <button class="tg-flow-btn" on:click={() => { closeTelegramPanel(); openGA(selectedTelegram.group_address, selectedTelegram.timestamp); }}
-        title="View all telegrams for {selectedTelegram.group_address} in ±8s window">
-        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
-          <path d="M3 8h10M9 4l4 4-4 4"/>
-        </svg>
-        View GA Flow ({selectedTelegram.group_address})
-      </button>
+      <div class="tg-footer-actions">
+        <button class="tg-flow-btn" on:click={() => { closeTelegramPanel(); openGA(selectedTelegram.group_address, selectedTelegram.timestamp); }}
+          title="View all telegrams for {selectedTelegram.group_address} in ±8s window">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <path d="M3 8h10M9 4l4 4-4 4"/>
+          </svg>
+          GA Flow ({selectedTelegram.group_address})
+        </button>
+        <a class="tg-ha-link"
+          href="http://{window.location.hostname}:8123/knx/group_monitor"
+          target="_blank" rel="noopener"
+          title="Open HA KNX Group Monitor">
+          Open in HA ↗
+        </a>
+      </div>
       <div class="tg-nav">
         <button class="tg-nav-btn" disabled={selectedTgIndex <= 0} on:click={prevTelegram} aria-label="Previous telegram">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M10 4l-5 4 5 4"/></svg>
-          Previous
+          Prev
         </button>
         <span class="tg-nav-pos">{selectedTgIndex + 1} / {telegrams.length}</span>
         <button class="tg-nav-btn" disabled={selectedTgIndex >= telegrams.length - 1} on:click={nextTelegram} aria-label="Next telegram">
@@ -1195,6 +1410,93 @@
   .empty-state p { font-weight: 600; margin: 0; font-size: 14px; }
   .empty-state span { font-size: 13px; }
 
+  /* ── KNX setup guide ────────────────────────── */
+  .setup-guide {
+    padding: 24px;
+    max-width: 680px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .setup-guide-header {
+    display: flex;
+    align-items: flex-start;
+    gap: 14px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .setup-guide-header svg {
+    width: 24px; height: 24px;
+    flex-shrink: 0;
+    color: #f59e0b;
+    margin-top: 2px;
+  }
+  .setup-guide-title { font-weight: 700; font-size: 15px; color: var(--color-text); margin-bottom: 4px; }
+  .setup-guide-sub { font-size: 13px; color: var(--color-text-muted); }
+  .setup-steps { display: flex; flex-direction: column; gap: 12px; }
+  .setup-step {
+    display: flex;
+    gap: 14px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .step-n {
+    flex-shrink: 0;
+    width: 24px; height: 24px;
+    background: var(--color-accent, #6366f1);
+    color: #fff;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700;
+  }
+  .step-body { flex: 1; font-size: 13px; color: var(--color-text-muted); }
+  .step-body strong { display: block; font-size: 13px; font-weight: 600; color: var(--color-text); margin-bottom: 6px; }
+  .step-body p { margin: 4px 0; line-height: 1.5; }
+  .step-body code { background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 3px; padding: 1px 5px; font-size: 12px; font-family: monospace; color: var(--color-accent, #6366f1); }
+  .code-block {
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 12px;
+    font-family: monospace;
+    color: var(--color-text);
+    margin: 8px 0 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+  .step-note { font-size: 12px; color: var(--color-text-muted); font-style: italic; margin-top: 6px !important; }
+  .setup-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .btn-check-status {
+    padding: 8px 18px; border-radius: 6px; font-size: 13px; font-weight: 600;
+    background: var(--color-accent, #6366f1); color: #fff; border: none; cursor: pointer;
+  }
+  .btn-check-status:hover { opacity: 0.88; }
+  .btn-check-status:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-diag-link { font-size: 13px; color: var(--color-accent, #6366f1); text-decoration: none; }
+  .btn-diag-link:hover { text-decoration: underline; }
+  .diag-error { font-size: 13px; color: #ef4444; background: #ef444412; border-radius: 6px; padding: 10px 14px; }
+  .diag-result {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .diag-row { display: flex; justify-content: space-between; font-size: 13px; gap: 8px; }
+  .diag-key { color: var(--color-text-muted); }
+  .diag-val { font-weight: 600; color: var(--color-text); font-family: monospace; }
+  .diag-val.ok { color: #22c55e; }
+  .diag-val.bad { color: #ef4444; }
+  .diag-hint { font-size: 12px; padding: 8px 12px; border-radius: 6px; background: #f59e0b18; color: var(--color-text-muted); margin-top: 4px; }
+  .diag-hint.ok { background: #22c55e18; }
+  .diag-hint code { font-size: 11px; font-family: monospace; }
+
   .spinner {
     width: 22px;
     height: 22px;
@@ -1599,7 +1901,8 @@
     position: fixed;
     top: 50%; left: 50%;
     transform: translate(-50%, -50%);
-    width: min(540px, 95vw);
+    width: min(560px, 95vw);
+    max-height: 90vh;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 14px;
@@ -1611,6 +1914,13 @@
     animation: modal-in 0.18s ease;
   }
 
+  .tg-modal-body {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
   @keyframes modal-in {
     from { opacity: 0; transform: translate(-50%, calc(-50% + 12px)); }
     to   { opacity: 1; transform: translate(-50%, -50%); }
@@ -1620,30 +1930,26 @@
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    padding: 18px 20px 14px;
+    padding: 16px 18px 12px;
     border-bottom: 1px solid var(--color-border);
     gap: 12px;
+    flex-shrink: 0;
   }
 
   .tg-modal-title-group {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    align-items: flex-start;
+    gap: 10px;
   }
-  .tg-modal-title-group svg { width: 18px; height: 18px; color: var(--color-primary, #6366f1); flex-shrink: 0; }
-  .tg-modal-title { font-size: 16px; font-weight: 700; color: var(--color-text); }
+  .tg-modal-title-group svg { width: 18px; height: 18px; color: var(--color-primary, #6366f1); flex-shrink: 0; margin-top: 3px; }
+  .tg-modal-title { font-size: 16px; font-weight: 700; color: var(--color-text); display: block; }
+  .tg-modal-subtitle { font-size: 11px; color: var(--color-text-muted); display: block; margin-top: 2px; }
 
   .tg-modal-header-right {
     display: flex;
     align-items: center;
     gap: 10px;
     flex-shrink: 0;
-  }
-
-  .tg-modal-time {
-    font-size: 12px;
-    color: var(--color-text-muted);
-    font-variant-numeric: tabular-nums;
   }
 
   .tg-dir-pill {
@@ -1660,8 +1966,8 @@
   .tg-addr-row {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 16px 20px 12px;
+    gap: 10px;
+    padding: 16px 18px 12px;
     border-bottom: 1px solid var(--color-border);
   }
 
@@ -1670,59 +1976,92 @@
     background: var(--color-bg);
     border: 1px solid var(--color-border);
     border-radius: 10px;
-    padding: 12px 16px;
+    padding: 11px 14px;
     min-width: 0;
+  }
+  .tg-addr-block.dest {
+    border-color: rgba(99,102,241,.3);
+    background: rgba(99,102,241,.05);
   }
 
   .tg-addr-label {
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.09em;
     color: var(--color-text-muted);
     margin-bottom: 5px;
   }
-
+  .tg-addr-value-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
   .tg-addr-value {
     font-family: ui-monospace, monospace;
-    font-size: 20px;
+    font-size: 19px;
     font-weight: 700;
     color: var(--color-text);
     letter-spacing: -0.01em;
   }
+  .tg-copy-btn {
+    background: none; border: none; cursor: pointer;
+    padding: 2px; border-radius: 3px;
+    color: var(--color-text-muted);
+    opacity: 0; transition: opacity 0.1s;
+    display: flex; align-items: center;
+  }
+  .tg-copy-btn svg { width: 12px; height: 12px; }
+  .tg-addr-block:hover .tg-copy-btn { opacity: 1; }
+  .tg-copy-btn:hover { color: var(--color-primary, #6366f1); }
 
   .tg-addr-sub {
     font-size: 11px;
     color: var(--color-text-muted);
     margin-top: 3px;
   }
+  .tg-addr-sub.ga-name { color: var(--color-primary, #6366f1); font-weight: 500; }
 
   .tg-addr-arrow {
     flex-shrink: 0;
     color: var(--color-text-muted);
-    padding: 4px;
   }
-  .tg-addr-arrow svg { width: 28px; height: 10px; display: block; }
+  .tg-addr-arrow svg { width: 32px; height: 12px; display: block; }
 
-  /* Value highlight */
+  /* Value highlight — colored by type */
   .tg-value-block {
-    padding: 16px 20px 14px;
+    padding: 14px 18px 12px;
     border-bottom: 1px solid var(--color-border);
-    background: var(--color-bg);
+    position: relative;
   }
   .tg-value-label {
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.09em;
     color: var(--color-text-muted);
     margin-bottom: 6px;
   }
   .tg-value-display {
     font-size: 26px;
     font-weight: 800;
-    color: var(--color-primary, #6366f1);
     letter-spacing: -0.02em;
+    font-family: ui-monospace, monospace;
+  }
+  .tg-value-write .tg-value-display  { color: #818cf8; }
+  .tg-value-response .tg-value-display { color: #4ade80; }
+  .tg-value-read .tg-value-display   { color: #fbbf24; font-family: inherit; font-size: 18px; }
+  .tg-value-neutral .tg-value-display,
+  .tg-value-empty .tg-value-display  { color: var(--color-text-muted); }
+  .tg-value-block.is-label .tg-value-display { font-family: inherit; font-size: 16px; font-weight: 600; }
+  .tg-dpt-badge {
+    position: absolute; top: 12px; right: 16px;
+    font-size: 11px; font-weight: 600;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: 5px;
+    padding: 3px 8px;
+    color: var(--color-text-muted);
     font-family: ui-monospace, monospace;
   }
 
@@ -1732,18 +2071,26 @@
     grid-template-columns: 1fr 1fr;
     gap: 1px;
     background: var(--color-border);
-    border-top: 1px solid var(--color-border);
     border-bottom: 1px solid var(--color-border);
   }
   .tg-detail-cell {
     background: var(--color-surface);
-    padding: 12px 16px;
+    padding: 11px 16px;
   }
+  .tg-entity-cell { grid-column: 1 / -1; }
+  .tg-entity-row { display: flex; align-items: center; gap: 10px; }
+  .tg-entity-filter-btn {
+    font-size: 11px; font-weight: 600;
+    padding: 2px 8px; border-radius: 4px;
+    background: rgba(99,102,241,.1); border: 1px solid rgba(99,102,241,.25);
+    color: #818cf8; cursor: pointer; flex-shrink: 0;
+  }
+  .tg-entity-filter-btn:hover { background: rgba(99,102,241,.2); }
   .tg-detail-label {
-    font-size: 10px;
-    font-weight: 600;
+    font-size: 9px;
+    font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
+    letter-spacing: 0.09em;
     color: var(--color-text-muted);
     margin-bottom: 4px;
   }
@@ -1753,15 +2100,17 @@
   }
   .tg-detail-value.bold { font-weight: 700; }
   .tg-detail-value.mono { font-family: ui-monospace, monospace; font-size: 12px; }
+  .tg-no-dpt { color: var(--color-text-muted); font-weight: 400; font-size: 12px; }
 
   /* Payload bytes */
   .tg-payload-block {
-    padding: 14px 20px;
+    padding: 12px 18px;
     border-bottom: 1px solid var(--color-border);
   }
   .tg-hex-row {
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 4px;
     margin-top: 6px;
   }
@@ -1775,7 +2124,10 @@
     border: 1px solid var(--color-border);
     color: var(--color-text);
     letter-spacing: 0.04em;
+    cursor: default;
   }
+  .tg-hex-byte:hover { border-color: var(--color-primary, #6366f1); }
+  .tg-hex-decimal { font-size: 11px; color: var(--color-text-muted); margin-left: 4px; }
   .tg-payload-empty {
     font-size: 12px;
     color: var(--color-text-muted);
@@ -1783,20 +2135,57 @@
     margin-top: 4px;
   }
 
-  /* Footer: GA flow button + nav */
+  /* Recent GA history strip */
+  .tg-history-block {
+    padding: 12px 18px;
+  }
+  .tg-history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 6px;
+  }
+  .tg-history-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.1s;
+  }
+  .tg-history-row:hover { background: var(--color-surface-hover); }
+  .tg-history-row.active { background: rgba(99,102,241,.1); }
+  .tg-hist-dir { width: 14px; text-align: center; font-weight: 700; }
+  .tg-hist-incoming { color: #4ade80; }
+  .tg-hist-outgoing { color: #818cf8; }
+  .tg-hist-type { color: var(--color-text-muted); width: 50px; flex-shrink: 0; }
+  .tg-hist-val { flex: 1; font-weight: 600; font-family: ui-monospace, monospace; }
+  .tg-hist-val-write    { color: #818cf8; }
+  .tg-hist-val-response { color: #4ade80; }
+  .tg-hist-val-read     { color: #fbbf24; font-family: inherit; }
+  .tg-hist-val-empty,
+  .tg-hist-val-neutral  { color: var(--color-text-muted); }
+  .tg-hist-time { color: var(--color-text-muted); font-size: 11px; flex-shrink: 0; }
+
+  /* Footer */
   .tg-modal-footer {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 12px 16px;
+    padding: 10px 16px;
     gap: 12px;
+    border-top: 1px solid var(--color-border);
+    flex-shrink: 0;
   }
+  .tg-footer-actions { display: flex; align-items: center; gap: 10px; }
 
   .tg-flow-btn {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 6px 14px;
+    padding: 6px 12px;
     border-radius: 7px;
     border: 1px solid var(--color-border);
     background: var(--color-surface-hover);
@@ -1806,17 +2195,22 @@
     cursor: pointer;
     transition: all 0.12s;
   }
-  .tg-flow-btn svg { width: 14px; height: 14px; flex-shrink: 0; }
+  .tg-flow-btn svg { width: 13px; height: 13px; flex-shrink: 0; }
   .tg-flow-btn:hover {
     border-color: var(--color-primary, #6366f1);
     color: var(--color-primary, #6366f1);
     background: rgba(99,102,241,.08);
   }
+  .tg-ha-link {
+    font-size: 12px; color: var(--color-text-muted); text-decoration: none;
+    padding: 6px 10px; border-radius: 6px; border: 1px solid var(--color-border);
+  }
+  .tg-ha-link:hover { color: var(--color-primary, #6366f1); border-color: rgba(99,102,241,.3); }
 
   .tg-nav {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
   }
   .tg-nav-btn {
     display: flex;

@@ -28,7 +28,7 @@
     ? events.findIndex(e => e.id === selectedZigbeeEvent.id)
     : -1;
 
-  function openEventDetail(ev) { selectedZigbeeEvent = ev; }
+  function openEventDetail(ev) { selectedZigbeeEvent = ev; showRawPayload = false; }
   function closeEventDetail() { selectedZigbeeEvent = null; }
   function prevEvent() {
     if (selectedEventIndex > 0) selectedZigbeeEvent = events[selectedEventIndex - 1];
@@ -70,6 +70,46 @@
   function getEventFullDetails(ev) {
     try {
       const payload = JSON.parse(ev.payload || '{}');
+
+      // ── call_service events ──────────────────────────────────────
+      if (ev.event_type === 'call_service' || payload.domain) {
+        const domain = payload.domain || ev.domain || '';
+        const service = payload.service || ev.service || '';
+        const serviceData = payload.service_data || {};
+        const details = [];
+        // Flatten service_data into key-value pairs
+        for (const [k, v] of Object.entries(serviceData)) {
+          if (v === null || v === undefined) continue;
+          const val = typeof v === 'object' ? JSON.stringify(v) : String(v);
+          details.push({ key: k, val });
+        }
+        // Target entity
+        const targets = payload.target || serviceData.entity_id;
+        const targetStr = Array.isArray(targets) ? targets.join(', ') : String(targets || '');
+        return {
+          type: 'call_service',
+          serviceCall: `${domain}.${service}`,
+          targetEntities: targetStr,
+          newVal: null, oldVal: null, unit: '', deviceClass: '',
+          friendlyName: ev.name || `${domain}.${service}`,
+          details,
+        };
+      }
+
+      // ── automation_triggered ────────────────────────────────────
+      if (ev.event_type === 'automation_triggered') {
+        const name = payload.name || ev.name || ev.entity_id || 'automation';
+        const reason = payload.context?.parent_id ? `Triggered by context` : (payload.source || '');
+        return {
+          type: 'automation',
+          serviceCall: null,
+          newVal: null, oldVal: null, unit: '', deviceClass: '',
+          friendlyName: name,
+          details: reason ? [{ key: 'Trigger', val: reason }] : [],
+        };
+      }
+
+      // ── state_changed events ─────────────────────────────────────
       const ns = payload.new_state || payload;
       const os = payload.old_state || null;
       const attrs = ns?.attributes || {};
@@ -84,6 +124,7 @@
         'temperature', 'humidity', 'pressure', 'co2', 'voc', 'pm25', 'pm10',
         'illuminance', 'illuminance_lux', 'occupancy', 'contact', 'action',
         'brightness', 'color_temp', 'device_class', 'unit_of_measurement',
+        'current', 'voltage', 'power', 'energy', 'rssi',
       ];
       const shown = new Set();
       const details = [];
@@ -100,16 +141,30 @@
         }
       }
       return {
+        type: 'state_changed',
+        serviceCall: null,
         newVal: ns?.state ?? null,
         oldVal: os?.state ?? null,
         unit: attrs.unit_of_measurement || '',
         deviceClass: attrs.device_class || '',
-        friendlyName: attrs.friendly_name || ev.name || ev.entity_id,
+        friendlyName: attrs.friendly_name || ev.name || ev.entity_id || '',
         details,
       };
     } catch {
-      return { newVal: null, oldVal: null, unit: '', deviceClass: '', friendlyName: '', details: [] };
+      return {
+        type: 'unknown', serviceCall: null,
+        newVal: null, oldVal: null, unit: '', deviceClass: '',
+        friendlyName: ev.name || ev.entity_id || '',
+        details: [],
+      };
     }
+  }
+
+  // Raw payload state for the detail modal
+  let showRawPayload = false;
+  function fmtPayloadJson(ev) {
+    try { return JSON.stringify(JSON.parse(ev.payload || '{}'), null, 2); }
+    catch { return ev.payload || '{}'; }
   }
 
   // Filter
@@ -385,6 +440,7 @@
                 on:viewin={(e) => { $currentView = e.detail; }}
                 on:tagclick={(e) => { filterEntity = e.detail; applyFilters(); addToast(`Filtered by entity: ${e.detail}`, 'info', 2500); }}
                 on:integrationclick={(e) => { const p = PROTOCOLS.find(x => x.value === e.detail); if (p) { protocol = e.detail; applyFilters(); addToast(`Switched to ${p.label}`, 'info', 2000); } else { addToast(`Integration: ${e.detail}`, 'info', 2000); } }}
+                on:domainclick={(e) => { addToast(`Domain: ${e.detail}`, 'info', 2000); }}
               />
               {#if getZigbeeDetails(event).length > 0}
                 <div class="proto-details">
@@ -443,6 +499,26 @@
       </div>
     </div>
 
+    <!-- Event type badge -->
+    {#if selectedZigbeeEvent.event_type}
+      <div class="zb-event-type-row">
+        <span class="zb-event-type-badge">{selectedZigbeeEvent.event_type.replace(/_/g, ' ')}</span>
+        {#if getEventFullDetails(selectedZigbeeEvent).serviceCall}
+          <span class="zb-service-call">{getEventFullDetails(selectedZigbeeEvent).serviceCall}</span>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- call_service: target entities -->
+    {#if getEventFullDetails(selectedZigbeeEvent).type === 'call_service' && getEventFullDetails(selectedZigbeeEvent).targetEntities}
+      <div class="zb-state-row">
+        <div class="zb-state-block main">
+          <div class="zb-state-label">Target Entity</div>
+          <div class="zb-state-val current">{getEventFullDetails(selectedZigbeeEvent).targetEntities}</div>
+        </div>
+      </div>
+    {/if}
+
     <!-- State change row -->
     {#if getEventFullDetails(selectedZigbeeEvent).newVal !== null}
       {@const dets = getEventFullDetails(selectedZigbeeEvent)}
@@ -482,6 +558,19 @@
 
     <!-- Footer: trace + navigation -->
     <div class="zb-modal-footer">
+      <!-- Raw payload toggle -->
+      <button class="zb-raw-toggle" on:click={() => showRawPayload = !showRawPayload}>
+        {showRawPayload ? 'Hide' : 'Show'} Raw Payload
+      </button>
+    </div>
+
+    {#if showRawPayload}
+      <div class="zb-raw-block">
+        <pre class="zb-raw-pre">{fmtPayloadJson(selectedZigbeeEvent)}</pre>
+      </div>
+    {/if}
+
+    <div class="zb-modal-footer zb-modal-footer-nav">
       <button class="zb-trace-btn" on:click={() => { const ev = selectedZigbeeEvent; closeEventDetail(); handleEventClick(ev); }}>
         <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
           <path d="M3 8h10M9 4l4 4-4 4"/>
@@ -955,6 +1044,54 @@
     word-break: break-word;
   }
 
+  /* Event type badge */
+  .zb-event-type-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 16px 4px;
+    flex-shrink: 0;
+  }
+  .zb-event-type-badge {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    padding: 2px 7px;
+  }
+  .zb-service-call {
+    font-size: 12px; font-weight: 600; font-family: monospace;
+    color: var(--color-accent, #6366f1);
+  }
+
+  /* Raw payload */
+  .zb-raw-toggle {
+    margin: 0 16px 4px;
+    padding: 5px 12px;
+    border-radius: 5px;
+    font-size: 12px; font-weight: 500;
+    background: var(--color-bg);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+    cursor: pointer;
+  }
+  .zb-raw-toggle:hover { background: var(--color-surface-hover); }
+  .zb-raw-block {
+    margin: 0 16px 8px;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    background: var(--color-bg);
+    max-height: 200px;
+    overflow: auto;
+  }
+  .zb-raw-pre {
+    margin: 0;
+    padding: 10px 12px;
+    font-size: 11px;
+    font-family: monospace;
+    white-space: pre;
+    color: var(--color-text-muted);
+  }
+
   /* Footer */
   .zb-modal-footer {
     display: flex;
@@ -962,6 +1099,9 @@
     justify-content: space-between;
     padding: 12px 16px;
     gap: 12px;
+  }
+  .zb-modal-footer-nav {
+    border-top: 1px solid var(--color-border);
   }
 
   .zb-trace-btn {
