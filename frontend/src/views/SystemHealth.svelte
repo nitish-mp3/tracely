@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import DomainIcon from '../components/DomainIcon.svelte';
-  import { getSystemHealth } from '../lib/api.js';
+  import { getSystemHealth, getNetworkDevices } from '../lib/api.js';
   import { selectedEntityTag } from '../stores/events.js';
 
   let data = null;
@@ -10,6 +10,13 @@
   let showAllNetwork = false;
   const NETWORK_PREVIEW = 5;
 
+  // ARP-based network scan state
+  let scanData = null;
+  let scanLoading = false;
+  let scanError = null;
+  let showAllScan = false;
+  const SCAN_PREVIEW = 10;
+
   onMount(async () => {
     try {
       data = await getSystemHealth();
@@ -17,7 +24,25 @@
       error = e.message;
     }
     loading = false;
+    // Load ARP network devices in background (no ping sweep)
+    try {
+      scanData = await getNetworkDevices(false);
+    } catch (e) {
+      scanError = e.message;
+    }
   });
+
+  async function runNetworkScan() {
+    scanLoading = true;
+    scanError = null;
+    showAllScan = false;
+    try {
+      scanData = await getNetworkDevices(true);
+    } catch (e) {
+      scanError = e.message;
+    }
+    scanLoading = false;
+  }
 
   function formatDuration(ms) {
     if (!ms) return 'ongoing';
@@ -85,6 +110,11 @@
     const s = n.state || '';
     return s === 'not_home' || s === 'off' || s === 'disconnected' || s === 'unavailable';
   }).length;
+
+  // ARP scan reactive vars
+  $: scanDevices = scanData?.devices || [];
+  $: visibleScanDevices = showAllScan ? scanDevices : scanDevices.slice(0, SCAN_PREVIEW);
+  $: hiddenScanCount = Math.max(0, scanDevices.length - SCAN_PREVIEW);
 
   // Collapsible section state
   let sectionOpen = {
@@ -222,59 +252,109 @@
       </div>
     {/if}
 
-    <!-- Network Devices (collapsible, compact) -->
-    {#if networkDevices.length > 0}
-      <div class="section-card">
+    <!-- Network Devices (ARP table + HA merged) -->
+    <div class="section-card">
+      <div class="section-header-wrap" class:header-collapsed={!sectionOpen.network}>
         <button class="section-header" on:click={() => toggleSection('network')} aria-expanded={sectionOpen.network}>
           <h3 class="section-title">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 10.55a7 7 0 019.08 0M5.53 12.61a3 3 0 013.95 0M8 15h.01M1 8.25a10 10 0 0114 0" /></svg>
             Network Devices
-            <span class="section-count">{networkDevices.length}</span>
-            <span class="section-summary net-summary">
-              <span class="net-sum-item net-sum-ok">{networkConnected} online</span>
-              {#if networkDisconnected > 0}
-                <span class="net-sum-item net-sum-bad">{networkDisconnected} offline</span>
-              {/if}
-            </span>
+            {#if scanData}
+              <span class="section-count">{scanDevices.length}</span>
+              <span class="section-summary net-summary">
+                <span class="net-sum-item net-sum-ok">{scanData.reachable} reachable</span>
+                {#if scanData.ha_matched > 0}
+                  <span class="net-sum-item net-sum-ha">{scanData.ha_matched} in HA</span>
+                {/if}
+              </span>
+            {:else if scanLoading}
+              <span class="section-hint">loading…</span>
+            {/if}
           </h3>
           <svg class="section-chevron" class:open={sectionOpen.network} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
         </button>
-        {#if sectionOpen.network}
+        <button
+          class="scan-btn"
+          class:is-scanning={scanLoading}
+          on:click={runNetworkScan}
+          disabled={scanLoading}
+          title="Ping-sweep the /24 subnet to discover all active devices (~5s)"
+        >
+          {#if scanLoading}
+            <span class="scan-spinner" />
+            Scanning…
+          {:else}
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="5.5"/><path d="M7 4.5v2.5l1.5 1"/></svg>
+            Scan
+          {/if}
+        </button>
+      </div>
+      {#if sectionOpen.network}
+        {#if scanLoading}
+          <div class="scan-loading-state">
+            <div class="spinner" />
+            <span>Scanning local network…</span>
+          </div>
+        {:else if scanError}
+          <p class="empty-note scan-error-note">Scan error: {scanError}</p>
+        {:else if scanDevices.length === 0}
+          <p class="empty-note">No ARP neighbors found yet. Press <strong>Scan</strong> to ping-sweep and discover all active devices.</p>
+        {:else}
           <div class="network-table">
-            <div class="net-table-head">
-              <span class="nth-name">Device</span>
+            <div class="net-table-head--wide">
+              <span class="nth-device">Device</span>
               <span class="nth-ip">IP Address</span>
-              <span class="nth-integ">Integration</span>
-              <span class="nth-state">Status</span>
+              <span class="nth-mac">MAC</span>
+              <span class="nth-host">Hostname</span>
+              <span class="nth-iface">Interface</span>
+              <span class="nth-status">Status</span>
             </div>
-            {#each visibleNetwork as net}
-              <div class="net-table-row">
-                <span class="nth-name" title={net.entity_id}>{net.friendly_name}</span>
-                <span class="nth-ip">{net.ip_address || '—'}</span>
-                <span class="nth-integ">{net.integration || '—'}</span>
-                <span class="nth-state">
-                  <span class="net-state-dot"
-                    class:dot-ok={net.state === 'home' || net.state === 'on' || net.state === 'connected'}
-                    class:dot-bad={net.state === 'not_home' || net.state === 'off' || net.state === 'disconnected' || net.state === 'unavailable'}
-                  ></span>
-                  {net.state || '—'}
+            {#each visibleScanDevices as dev}
+              <div class="net-table-row--wide">
+                <span class="nth-device" title={dev.ha_entity_id || dev.ip}>
+                  {#if dev.ha_name}
+                    <span class="dev-ha-name">{dev.ha_name}</span>
+                  {:else if dev.hostname}
+                    {dev.hostname}
+                  {:else}
+                    <span class="dev-ip-fallback">{dev.ip}</span>
+                  {/if}
+                  {#if dev.ha_area}
+                    <span class="dev-area-badge">{dev.ha_area}</span>
+                  {/if}
+                </span>
+                <span class="nth-ip">{dev.ip}</span>
+                <span class="nth-mac">{dev.mac || '—'}</span>
+                <span class="nth-host" title={dev.hostname}>{dev.hostname || '—'}</span>
+                <span class="nth-iface">{dev.interface || '—'}</span>
+                <span class="nth-status">
+                  {#if dev.ha_state}
+                    <span class="net-state-dot"
+                      class:dot-ok={dev.ha_state === 'home' || dev.ha_state === 'on' || dev.ha_state === 'connected' || dev.ha_state === 'online'}
+                      class:dot-bad={dev.ha_state === 'not_home' || dev.ha_state === 'off' || dev.ha_state === 'unavailable'}
+                    ></span>
+                    {dev.ha_state}
+                  {:else}
+                    <span class="net-state-dot" class:dot-ok={dev.reachable} class:dot-stale={!dev.reachable}></span>
+                    {dev.reachable ? 'reachable' : 'stale'}
+                  {/if}
                 </span>
               </div>
             {/each}
-            {#if !showAllNetwork && hiddenNetworkCount > 0}
-              <button class="show-more-btn" on:click|stopPropagation={() => showAllNetwork = true}>
-                Show {hiddenNetworkCount} more devices
+            {#if !showAllScan && hiddenScanCount > 0}
+              <button class="show-more-btn" on:click={() => showAllScan = true}>
+                Show {hiddenScanCount} more devices
               </button>
             {/if}
-            {#if showAllNetwork && hiddenNetworkCount > 0}
-              <button class="show-more-btn" on:click|stopPropagation={() => showAllNetwork = false}>
+            {#if showAllScan && hiddenScanCount > 0}
+              <button class="show-more-btn" on:click={() => showAllScan = false}>
                 Show less
               </button>
             {/if}
           </div>
         {/if}
-      </div>
-    {/if}
+      {/if}
+    </div>
 
     <!-- Area Breakdown -->
     {#if sortedAreas.length > 0}
@@ -574,38 +654,62 @@
   .net-sum-bad { color: var(--color-error, #ef4444); background: rgba(239,68,68,.1); }
 
 
-  /* Network Table (compact) */
+  /* Network Table */
   .network-table { padding: var(--sp-2) var(--sp-4) var(--sp-3); }
-  .net-table-head {
-    display: grid; grid-template-columns: 1fr 120px 100px 90px;
+  .net-table-head--wide {
+    display: grid;
+    grid-template-columns: 1.6fr 110px 130px 1fr 80px 100px;
     gap: var(--sp-2); padding: var(--sp-1) var(--sp-2);
     font-size: var(--text-2xs); font-weight: 600; color: var(--color-text-muted);
     text-transform: uppercase; letter-spacing: 0.04em;
     border-bottom: 1px solid var(--color-border);
   }
-  .net-table-row {
-    display: grid; grid-template-columns: 1fr 120px 100px 90px;
+  .net-table-row--wide {
+    display: grid;
+    grid-template-columns: 1.6fr 110px 130px 1fr 80px 100px;
     gap: var(--sp-2); padding: var(--sp-2);
     font-size: var(--text-xs); color: var(--color-text);
     border-bottom: 1px solid var(--color-border);
     transition: background var(--duration-fast);
     align-items: center;
   }
-  .net-table-row:last-of-type { border-bottom: none; }
-  .net-table-row:hover { background: var(--color-surface-hover); }
-  .nth-name {
+  .net-table-row--wide:last-of-type { border-bottom: none; }
+  .net-table-row--wide:hover { background: var(--color-surface-hover); }
+  .nth-device {
+    display: flex; align-items: center; gap: var(--sp-2);
+    overflow: hidden; min-width: 0;
+  }
+  .dev-ha-name {
+    font-weight: 600; color: var(--color-text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    font-weight: 500;
+  }
+  .dev-ip-fallback {
+    font-family: var(--font-mono); font-size: var(--text-2xs);
+    color: var(--color-text-muted);
+  }
+  .dev-area-badge {
+    font-size: var(--text-2xs); color: var(--color-text-muted);
+    background: var(--color-surface-hover); border-radius: var(--radius-full);
+    padding: 1px 6px; flex-shrink: 0;
   }
   .nth-ip {
     font-family: var(--font-mono); font-size: var(--text-2xs);
-    color: var(--color-text-secondary);
+    color: var(--color-primary); font-weight: 600;
   }
-  .nth-integ {
+  .nth-mac {
+    font-family: var(--font-mono); font-size: var(--text-2xs);
+    color: var(--color-text-secondary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .nth-host {
     font-size: var(--text-2xs); color: var(--color-text-muted);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .nth-state {
+  .nth-iface {
+    font-family: var(--font-mono); font-size: var(--text-2xs);
+    color: var(--color-text-muted);
+  }
+  .nth-status {
     display: flex; align-items: center; gap: 4px;
     font-size: var(--text-2xs); font-weight: 600;
   }
@@ -615,6 +719,7 @@
   }
   .net-state-dot.dot-ok { background: var(--color-success); }
   .net-state-dot.dot-bad { background: var(--color-error, #ef4444); }
+  .net-state-dot.dot-stale { background: var(--color-warning, #f59e0b); }
   .show-more-btn {
     display: block; width: 100%; padding: var(--sp-2);
     text-align: center; font-size: var(--text-xs); font-weight: 600;
@@ -623,6 +728,49 @@
     transition: background var(--duration-fast);
   }
   .show-more-btn:hover { background: var(--color-surface-hover); }
+
+  /* Scan button + header layout */
+  .section-header-wrap {
+    display: flex; align-items: center;
+    border-bottom: 1px solid var(--color-border);
+  }
+  .section-header-wrap.header-collapsed { border-bottom-color: transparent; }
+  .section-header-wrap .section-header {
+    flex: 1; border-bottom: none;
+  }
+  .scan-btn {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 10px; border-radius: var(--radius-full);
+    font: inherit; font-size: var(--text-2xs); font-weight: 600;
+    color: var(--color-primary);
+    background: var(--color-primary-soft, rgba(99,102,241,.1));
+    border: 1px solid transparent;
+    cursor: pointer; transition: all var(--duration-fast);
+    white-space: nowrap; flex-shrink: 0;
+    margin-right: var(--sp-3);
+  }
+  .scan-btn:hover:not(:disabled) {
+    background: var(--color-primary-soft, rgba(99,102,241,.15));
+    border-color: var(--color-primary);
+  }
+  .scan-btn:disabled { opacity: 0.6; cursor: default; }
+  .scan-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
+  .scan-spinner {
+    width: 10px; height: 10px; border-radius: 50%;
+    border: 2px solid rgba(99,102,241,.3); border-top-color: var(--color-primary);
+    animation: spin 0.6s linear infinite; flex-shrink: 0;
+  }
+  .scan-loading-state {
+    display: flex; align-items: center; gap: var(--sp-3);
+    padding: var(--sp-4) var(--sp-5); color: var(--color-text-muted);
+    font-size: var(--text-sm);
+  }
+  .scan-error-note { color: var(--color-error, #ef4444) !important; }
+  .net-sum-ha {
+    font-size: var(--text-2xs); font-weight: 600; padding: 1px 6px;
+    border-radius: var(--radius-full);
+    color: var(--color-primary); background: var(--color-primary-soft, rgba(99,102,241,.1));
+  }
 
   /* Integration Breakdown */
   .integration-list { display: flex; flex-direction: column; gap: var(--sp-1); padding: var(--sp-2) var(--sp-4) var(--sp-3); }
@@ -760,12 +908,15 @@
     .top-integrations { grid-template-columns: repeat(2, 1fr); }
     .integration-name { width: 100px; }
     .offline-times { flex-direction: column; align-items: flex-start; }
-    .net-table-head, .net-table-row { grid-template-columns: 1fr 90px 80px 70px; }
+    .net-table-head--wide { grid-template-columns: 1.2fr 90px 100px; }
+    .net-table-row--wide { grid-template-columns: 1.2fr 90px 100px; }
+    .nth-host, .nth-iface { display: none; }
     .section-summary { display: none; }
   }
   @media (max-width: 400px) {
     .kpi-grid { grid-template-columns: 1fr; }
-    .net-table-head, .net-table-row { grid-template-columns: 1fr 70px; }
-    .nth-ip, .nth-integ { display: none; }
+    .net-table-head--wide { grid-template-columns: 1fr 80px; }
+    .net-table-row--wide { grid-template-columns: 1fr 80px; }
+    .nth-mac, .nth-host, .nth-iface, .nth-status { display: none; }
   }
 </style>

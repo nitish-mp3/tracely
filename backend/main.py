@@ -7,7 +7,10 @@ import hashlib
 import json
 import logging
 import os
+import re
+import socket
 import time
+from pathlib import Path
 from collections import defaultdict, deque
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -1001,6 +1004,220 @@ async def api_stats() -> dict[str, Any]:
     return await storage.get_activity_stats()
 
 
+# ─── Active Network Discovery Helpers ────────────────────────────────────────
+
+async def _read_arp_table() -> list[dict[str, Any]]:
+    """Read network neighbors. Tries /proc/net/arp → ip neigh → arp -a."""
+    results: list[dict[str, Any]] = []
+
+    # Strategy 1: /proc/net/arp (always available on Linux)
+    try:
+        proc_arp = Path("/proc/net/arp")
+        if proc_arp.exists():
+            for line in proc_arp.read_text().splitlines()[1:]:
+                parts = line.split()
+                if len(parts) < 6:
+                    continue
+                ip, flags, mac, iface = parts[0], parts[2], parts[3], parts[5]
+                if mac == "00:00:00:00:00:00":
+                    continue
+                results.append({
+                    "ip": ip,
+                    "mac": mac.upper(),
+                    "interface": iface,
+                    "reachable": bool(int(flags, 16) & 0x2),
+                })
+    except Exception:
+        pass
+
+    # Strategy 2: ip neigh show
+    if not results:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ip", "neigh", "show",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            for line in stdout.decode().splitlines():
+                parts = line.split()
+                if len(parts) < 4:
+                    continue
+                ip = parts[0]
+                iface = parts[2] if len(parts) > 2 else ""
+                mac = ""
+                if "lladdr" in parts:
+                    idx = parts.index("lladdr")
+                    if idx + 1 < len(parts):
+                        mac = parts[idx + 1].upper()
+                if not mac:
+                    continue
+                state = parts[-1] if parts else ""
+                results.append({
+                    "ip": ip,
+                    "mac": mac,
+                    "interface": iface,
+                    "reachable": state in ("REACHABLE", "STALE", "DELAY", "PROBE"),
+                })
+        except Exception:
+            pass
+
+    # Strategy 3: arp -a (last resort)
+    if not results:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "arp", "-a",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+            for line in stdout.decode().splitlines():
+                ip_m = re.search(r'\((\d+\.\d+\.\d+\.\d+)\)', line)
+                mac_m = re.search(r'at\s+([\da-fA-F:]{17})', line)
+                iface_m = re.search(r'on\s+(\S+)', line)
+                if ip_m and mac_m:
+                    results.append({
+                        "ip": ip_m.group(1),
+                        "mac": mac_m.group(1).upper(),
+                        "interface": iface_m.group(1) if iface_m else "",
+                        "reachable": True,
+                    })
+        except Exception:
+            pass
+
+    return results
+
+
+async def _resolve_hostname(ip: str) -> str:
+    """Reverse DNS lookup with 1 s timeout; returns empty string on failure."""
+    try:
+        loop = asyncio.get_event_loop()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, socket.gethostbyaddr, ip),
+            timeout=1.0,
+        )
+        return result[0]
+    except Exception:
+        return ""
+
+
+async def _get_local_subnet() -> str | None:
+    """Return '192.168.1' (base /24) of the default route source IP."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ip", "route", "show", "default",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+        parts = stdout.decode().split()
+        for i, p in enumerate(parts):
+            if p == "src" and i + 1 < len(parts):
+                return ".".join(parts[i + 1].split(".")[:3])
+    except Exception:
+        pass
+    return None
+
+
+async def _ping_sweep(base: str) -> None:
+    """Ping .1–.254 concurrently to warm the ARP table (max 48 parallel)."""
+    sem = asyncio.Semaphore(48)
+
+    async def _ping(ip: str) -> None:
+        async with sem:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ping", "-c", "1", "-W", "1", "-q", ip,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await asyncio.wait_for(proc.wait(), timeout=2)
+            except Exception:
+                pass
+
+    await asyncio.gather(*[_ping(f"{base}.{i}") for i in range(1, 255)])
+
+
+@app.get("/api/network-devices")
+async def api_network_devices(scan: bool = Query(default=False)) -> dict[str, Any]:
+    """
+    Network device discovery: ARP table merged with HA entity data.
+    Pass ?scan=true to run a /24 ping sweep first (~5 s, warms ARP table).
+    """
+    # Build lookup maps from HA entity registry
+    ha_by_ip: dict[str, dict[str, Any]] = {}
+    ha_by_mac: dict[str, dict[str, Any]] = {}
+    if entity_map:
+        for e in entity_map.all_entities():
+            attrs = e.attributes
+            ip = (
+                attrs.get("ip_address") or attrs.get("ip") or
+                attrs.get("host") or attrs.get("ipv4_address") or
+                attrs.get("network_address") or ""
+            )
+            mac = attrs.get("mac_address") or attrs.get("mac") or ""
+            ha_data: dict[str, Any] = {
+                "entity_id": e.entity_id,
+                "friendly_name": e.friendly_name or e.entity_id,
+                "state": e.state or "",
+                "integration": e.integration or "",
+                "area": e.area or "",
+            }
+            if ip:
+                ha_by_ip[ip.strip().lower()] = ha_data
+            if mac:
+                ha_by_mac[mac.strip().upper()] = ha_data
+
+    # Optional ping sweep to populate ARP table
+    if scan:
+        subnet = await _get_local_subnet()
+        if subnet:
+            await _ping_sweep(subnet)
+
+    # Read ARP / neighbor table
+    arp_entries = await _read_arp_table()
+
+    # Resolve hostnames concurrently
+    hostnames = await asyncio.gather(*[_resolve_hostname(e["ip"]) for e in arp_entries])
+
+    devices: list[dict[str, Any]] = []
+    seen_ips: set[str] = set()
+    for entry, hostname in zip(arp_entries, hostnames):
+        ip = entry["ip"]
+        if ip in seen_ips:
+            continue
+        seen_ips.add(ip)
+        mac = entry["mac"]
+        ha = ha_by_ip.get(ip.strip().lower()) or ha_by_mac.get(mac.strip().upper()) or {}
+        devices.append({
+            "ip": ip,
+            "mac": mac,
+            "hostname": hostname,
+            "interface": entry["interface"],
+            "reachable": entry["reachable"],
+            "ha_entity_id": ha.get("entity_id", ""),
+            "ha_name": ha.get("friendly_name", ""),
+            "ha_state": ha.get("state", ""),
+            "ha_integration": ha.get("integration", ""),
+            "ha_area": ha.get("area", ""),
+        })
+
+    # Sort: reachable first, then numerically by IP octets
+    def _sort_key(d: dict[str, Any]) -> tuple:
+        octets = [int(x) for x in d["ip"].split(".") if x.isdigit()]
+        return (0 if d["reachable"] else 1, octets)
+
+    devices.sort(key=_sort_key)
+
+    return {
+        "devices": devices,
+        "total": len(devices),
+        "reachable": sum(1 for d in devices if d["reachable"]),
+        "ha_matched": sum(1 for d in devices if d["ha_entity_id"]),
+        "scanned": scan,
+    }
+
+
 @app.get("/api/system")
 async def api_system_health() -> dict[str, Any]:
     """System health: network, entities, integrations, areas, offline periods."""
@@ -1039,17 +1256,23 @@ async def api_system_health() -> dict[str, Any]:
                 "area": area,
             })
 
-        # Extract network info from relevant entities
-        ip_addr = attrs.get("ip_address") or attrs.get("ip")
+        # Extract network info from relevant entities (broad key coverage)
+        ip_addr = (
+            attrs.get("ip_address") or attrs.get("ip") or
+            attrs.get("host") or attrs.get("ipv4_address") or
+            attrs.get("network_address")
+        )
         mac_addr = attrs.get("mac_address") or attrs.get("mac")
-        ssid = attrs.get("ssid") or attrs.get("wifi_ssid")
-        signal = attrs.get("signal_strength") or attrs.get("wifi_signal")
+        ssid = attrs.get("ssid") or attrs.get("wifi_ssid") or attrs.get("network_name")
+        signal = attrs.get("signal_strength") or attrs.get("wifi_signal") or attrs.get("rssi")
+        hostname = attrs.get("hostname") or attrs.get("host_name") or ""
         if ip_addr or mac_addr or ssid:
             network_info.append({
                 "entity_id": eid,
                 "friendly_name": e.friendly_name or eid,
                 "ip_address": ip_addr,
                 "mac_address": mac_addr,
+                "hostname": hostname,
                 "ssid": ssid,
                 "signal_strength": signal,
                 "state": state,

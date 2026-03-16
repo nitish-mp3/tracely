@@ -92,6 +92,10 @@ export async function getSystemHealth() {
   return request('/api/system');
 }
 
+export async function getNetworkDevices(scan = false) {
+  return request(`/api/network-devices${scan ? '?scan=true' : ''}`);
+}
+
 // ─── SSE stream (global singleton with robust reconnection) ─
 
 let _sseSource = null;
