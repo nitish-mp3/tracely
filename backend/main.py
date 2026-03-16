@@ -1518,7 +1518,7 @@ def _find_free_port(preferred: int, host: str = "0.0.0.0") -> int:
     """Try the preferred port first, then a range of fallbacks."""
     import socket
 
-    fallback_ports = [preferred] + [p for p in range(8099, 8120) if p != preferred] + [8200, 8300, 8400, 8500]
+    fallback_ports = [preferred] + [p for p in range(8765, 8785) if p != preferred]
     for port in fallback_ports:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
