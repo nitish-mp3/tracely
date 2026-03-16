@@ -1007,10 +1007,10 @@ async def api_stats() -> dict[str, Any]:
 # ─── Active Network Discovery Helpers ────────────────────────────────────────
 
 async def _read_arp_table() -> list[dict[str, Any]]:
-    """Read network neighbors. Tries /proc/net/arp → ip neigh → arp -a."""
-    results: list[dict[str, Any]] = []
+    """Read network neighbors from all available sources, merged and deduplicated."""
+    seen: dict[str, dict[str, Any]] = {}  # keyed by IP
 
-    # Strategy 1: /proc/net/arp (always available on Linux)
+    # Strategy 1: /proc/net/arp
     try:
         proc_arp = Path("/proc/net/arp")
         if proc_arp.exists():
@@ -1021,49 +1021,50 @@ async def _read_arp_table() -> list[dict[str, Any]]:
                 ip, flags, mac, iface = parts[0], parts[2], parts[3], parts[5]
                 if mac == "00:00:00:00:00:00":
                     continue
-                results.append({
+                seen[ip] = {
                     "ip": ip,
                     "mac": mac.upper(),
                     "interface": iface,
                     "reachable": bool(int(flags, 16) & 0x2),
-                })
+                }
     except Exception:
         pass
 
-    # Strategy 2: ip neigh show
-    if not results:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ip", "neigh", "show",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
-            for line in stdout.decode().splitlines():
-                parts = line.split()
-                if len(parts) < 4:
-                    continue
-                ip = parts[0]
-                iface = parts[2] if len(parts) > 2 else ""
-                mac = ""
-                if "lladdr" in parts:
-                    idx = parts.index("lladdr")
-                    if idx + 1 < len(parts):
-                        mac = parts[idx + 1].upper()
-                if not mac:
-                    continue
-                state = parts[-1] if parts else ""
-                results.append({
-                    "ip": ip,
-                    "mac": mac,
-                    "interface": iface,
-                    "reachable": state in ("REACHABLE", "STALE", "DELAY", "PROBE"),
-                })
-        except Exception:
-            pass
+    # Strategy 2: ip neigh show — always run, richer data, more entries
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ip", "neigh", "show",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        for line in stdout.decode().splitlines():
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            ip = parts[0]
+            if not re.match(r'^\d+\.\d+\.\d+\.\d+$', ip):
+                continue  # skip IPv6
+            iface = parts[2] if len(parts) > 2 else ""
+            mac = ""
+            if "lladdr" in parts:
+                idx = parts.index("lladdr")
+                if idx + 1 < len(parts):
+                    mac = parts[idx + 1].upper()
+            if not mac:
+                continue
+            state = parts[-1] if parts else ""
+            reachable = state in ("REACHABLE", "STALE", "DELAY", "PROBE", "PERMANENT")
+            if ip not in seen:
+                seen[ip] = {"ip": ip, "mac": mac, "interface": iface, "reachable": reachable}
+            else:
+                seen[ip]["reachable"] = reachable
+                seen[ip]["interface"] = seen[ip]["interface"] or iface
+    except Exception:
+        pass
 
-    # Strategy 3: arp -a (last resort)
-    if not results:
+    # Strategy 3: arp -a — only if nothing found yet
+    if not seen:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "arp", "-a",
@@ -1076,16 +1077,18 @@ async def _read_arp_table() -> list[dict[str, Any]]:
                 mac_m = re.search(r'at\s+([\da-fA-F:]{17})', line)
                 iface_m = re.search(r'on\s+(\S+)', line)
                 if ip_m and mac_m:
-                    results.append({
-                        "ip": ip_m.group(1),
-                        "mac": mac_m.group(1).upper(),
-                        "interface": iface_m.group(1) if iface_m else "",
-                        "reachable": True,
-                    })
+                    ip = ip_m.group(1)
+                    if ip not in seen:
+                        seen[ip] = {
+                            "ip": ip,
+                            "mac": mac_m.group(1).upper(),
+                            "interface": iface_m.group(1) if iface_m else "",
+                            "reachable": True,
+                        }
         except Exception:
             pass
 
-    return results
+    return list(seen.values())
 
 
 async def _resolve_hostname(ip: str) -> str:
@@ -1102,20 +1105,70 @@ async def _resolve_hostname(ip: str) -> str:
 
 
 async def _get_local_subnet() -> str | None:
-    """Return '192.168.1' (base /24) of the default route source IP."""
+    """
+    Find the home LAN /24 base (e.g. '192.168.1') via multiple strategies.
+    Skips Docker/HAOS internal ranges (172.17.x, 172.30.x).
+    """
+    _docker_prefixes = ("172.17.", "172.30.", "172.16.", "127.", "169.254.")
+
+    def _is_lan_ip(ip: str) -> bool:
+        if any(ip.startswith(p) for p in _docker_prefixes):
+            return False
+        return bool(re.match(r'^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)', ip))
+
+    def _base(ip: str) -> str:
+        return ".".join(ip.split(".")[:3])
+
+    # Strategy 1: ip route show default — look for 'src' field
     try:
         proc = await asyncio.create_subprocess_exec(
             "ip", "route", "show", "default",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
         parts = stdout.decode().split()
         for i, p in enumerate(parts):
-            if p == "src" and i + 1 < len(parts):
-                return ".".join(parts[i + 1].split(".")[:3])
+            if p == "src" and i + 1 < len(parts) and _is_lan_ip(parts[i + 1]):
+                return _base(parts[i + 1])
     except Exception:
         pass
+
+    # Strategy 2: hostname -I — pick first LAN-looking IP
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "hostname", "-I",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+        for ip in stdout.decode().split():
+            if _is_lan_ip(ip):
+                return _base(ip)
+    except Exception:
+        pass
+
+    # Strategy 3: ip addr show — scan all interfaces
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ip", "addr", "show",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+        for line in stdout.decode().splitlines():
+            m = re.search(r'inet (\d+\.\d+\.\d+\.\d+)/', line)
+            if m and _is_lan_ip(m.group(1)):
+                return _base(m.group(1))
+    except Exception:
+        pass
+
+    # Strategy 4: parse ARP table itself to infer subnet
+    try:
+        entries = await _read_arp_table()
+        for e in entries:
+            if _is_lan_ip(e["ip"]):
+                return _base(e["ip"])
+    except Exception:
+        pass
+
     return None
 
 

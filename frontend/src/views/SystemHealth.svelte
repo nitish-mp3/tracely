@@ -25,13 +25,17 @@
       error = e.message;
     }
     loading = false;
-    // Load ARP network devices in background (no ping sweep)
+    // Load ARP network devices; auto-scan if table is empty
     try {
       scanData = await getNetworkDevices(false);
     } catch (e) {
       scanError = e.message;
     }
     scanReady = true;
+    // If ARP table is nearly empty, kick off a full scan automatically
+    if (!scanError && (scanData?.devices?.length ?? 0) < 3) {
+      runNetworkScan();
+    }
   });
 
   async function runNetworkScan() {
