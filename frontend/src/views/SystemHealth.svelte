@@ -15,7 +15,8 @@
   let scanLoading = false;
   let scanError = null;
   let showAllScan = false;
-  const SCAN_PREVIEW = 10;
+  let scanReady = false;
+  const SCAN_PREVIEW = 12;
 
   onMount(async () => {
     try {
@@ -30,6 +31,7 @@
     } catch (e) {
       scanError = e.message;
     }
+    scanReady = true;
   });
 
   async function runNetworkScan() {
@@ -42,6 +44,21 @@
       scanError = e.message;
     }
     scanLoading = false;
+  }
+
+  function isDeviceOnline(dev) {
+    const s = dev.ha_state || '';
+    if (s) return s === 'home' || s === 'on' || s === 'connected' || s === 'online';
+    return dev.reachable;
+  }
+  function isDeviceOffline(dev) {
+    const s = dev.ha_state || '';
+    if (s) return s === 'not_home' || s === 'off' || s === 'unavailable';
+    return false;
+  }
+  function getDeviceStatus(dev) {
+    if (dev.ha_state) return dev.ha_state;
+    return dev.reachable ? 'reachable' : 'stale';
   }
 
   function formatDuration(ms) {
@@ -115,6 +132,7 @@
   $: scanDevices = scanData?.devices || [];
   $: visibleScanDevices = showAllScan ? scanDevices : scanDevices.slice(0, SCAN_PREVIEW);
   $: hiddenScanCount = Math.max(0, scanDevices.length - SCAN_PREVIEW);
+  $: isScanPending = !scanReady && !scanLoading && !scanError;
 
   // Collapsible section state
   let sectionOpen = {
@@ -267,7 +285,7 @@
                   <span class="net-sum-item net-sum-ha">{scanData.ha_matched} in HA</span>
                 {/if}
               </span>
-            {:else if scanLoading}
+            {:else if !scanReady}
               <span class="section-hint">loading…</span>
             {/if}
           </h3>
@@ -284,74 +302,89 @@
             <span class="scan-spinner" />
             Scanning…
           {:else}
-            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="5.5"/><path d="M7 4.5v2.5l1.5 1"/></svg>
+            <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M7 1v2M7 11v2M1 7h2M11 7h2M2.93 2.93l1.41 1.41M9.66 9.66l1.41 1.41M2.93 11.07l1.41-1.41M9.66 4.34l1.41-1.41M7 5a2 2 0 100 4 2 2 0 000-4z"/></svg>
             Scan
           {/if}
         </button>
       </div>
+
       {#if sectionOpen.network}
         {#if scanLoading}
           <div class="scan-loading-state">
             <div class="spinner" />
-            <span>Scanning local network…</span>
+            <span>Pinging local network, this takes ~5 seconds…</span>
+          </div>
+        {:else if isScanPending}
+          <div class="scan-loading-state">
+            <div class="spinner" style="width:16px;height:16px;border-width:2px" />
+            <span>Reading ARP neighbors…</span>
           </div>
         {:else if scanError}
-          <p class="empty-note scan-error-note">Scan error: {scanError}</p>
+          <p class="empty-note scan-error-note">Could not read network: {scanError}</p>
         {:else if scanDevices.length === 0}
-          <p class="empty-note">No ARP neighbors found yet. Press <strong>Scan</strong> to ping-sweep and discover all active devices.</p>
+          <div class="scan-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 20h.01M8.56 16.11a6 6 0 016.88 0M4.93 12.55a11 11 0 0114.14 0M1.42 9a15.91 15.91 0 0121.16 0"/></svg>
+            <p>No devices found in ARP table.</p>
+            <p class="scan-empty-hint">Press <strong>Scan</strong> to ping-sweep the subnet and discover active devices.</p>
+          </div>
         {:else}
-          <div class="network-table">
-            <div class="net-table-head--wide">
-              <span class="nth-device">Device</span>
-              <span class="nth-ip">IP Address</span>
-              <span class="nth-mac">MAC</span>
-              <span class="nth-host">Hostname</span>
-              <span class="nth-iface">Interface</span>
-              <span class="nth-status">Status</span>
-            </div>
+          <div class="device-grid">
             {#each visibleScanDevices as dev}
-              <div class="net-table-row--wide">
-                <span class="nth-device" title={dev.ha_entity_id || dev.ip}>
-                  {#if dev.ha_name}
-                    <span class="dev-ha-name">{dev.ha_name}</span>
-                  {:else if dev.hostname}
-                    {dev.hostname}
-                  {:else}
-                    <span class="dev-ip-fallback">{dev.ip}</span>
-                  {/if}
-                  {#if dev.ha_area}
-                    <span class="dev-area-badge">{dev.ha_area}</span>
-                  {/if}
-                </span>
-                <span class="nth-ip">{dev.ip}</span>
-                <span class="nth-mac">{dev.mac || '—'}</span>
-                <span class="nth-host" title={dev.hostname}>{dev.hostname || '—'}</span>
-                <span class="nth-iface">{dev.interface || '—'}</span>
-                <span class="nth-status">
-                  {#if dev.ha_state}
-                    <span class="net-state-dot"
-                      class:dot-ok={dev.ha_state === 'home' || dev.ha_state === 'on' || dev.ha_state === 'connected' || dev.ha_state === 'online'}
-                      class:dot-bad={dev.ha_state === 'not_home' || dev.ha_state === 'off' || dev.ha_state === 'unavailable'}
+              <div class="device-card" class:device-card--ha={!!dev.ha_name}>
+                <div class="device-card-top">
+                  <span class="device-card-name" title={dev.ha_entity_id || ''}>
+                    {dev.ha_name || dev.hostname || dev.ip}
+                  </span>
+                  <span class="device-status-chip"
+                    class:chip-ok={isDeviceOnline(dev)}
+                    class:chip-bad={isDeviceOffline(dev)}
+                    class:chip-stale={!isDeviceOnline(dev) && !isDeviceOffline(dev)}
+                  >
+                    <span class="chip-dot"
+                      class:dot-ok={isDeviceOnline(dev)}
+                      class:dot-bad={isDeviceOffline(dev)}
                     ></span>
-                    {dev.ha_state}
-                  {:else}
-                    <span class="net-state-dot" class:dot-ok={dev.reachable} class:dot-stale={!dev.reachable}></span>
-                    {dev.reachable ? 'reachable' : 'stale'}
+                    {getDeviceStatus(dev)}
+                  </span>
+                </div>
+
+                <span class="device-card-ip">{dev.ip}</span>
+
+                <div class="device-card-meta">
+                  {#if dev.mac}
+                    <span class="dmeta-item dmeta-mac">{dev.mac}</span>
                   {/if}
-                </span>
+                  {#if dev.interface}
+                    <span class="dmeta-item dmeta-iface">{dev.interface}</span>
+                  {/if}
+                  {#if dev.hostname && dev.hostname !== dev.ha_name}
+                    <span class="dmeta-item dmeta-host">{dev.hostname}</span>
+                  {/if}
+                </div>
+
+                {#if dev.ha_integration || dev.ha_area}
+                  <div class="device-card-badges">
+                    {#if dev.ha_integration}
+                      <span class="dbadge dbadge--ha">{dev.ha_integration}</span>
+                    {/if}
+                    {#if dev.ha_area}
+                      <span class="dbadge">{dev.ha_area}</span>
+                    {/if}
+                  </div>
+                {/if}
               </div>
             {/each}
-            {#if !showAllScan && hiddenScanCount > 0}
-              <button class="show-more-btn" on:click={() => showAllScan = true}>
-                Show {hiddenScanCount} more devices
-              </button>
-            {/if}
-            {#if showAllScan && hiddenScanCount > 0}
-              <button class="show-more-btn" on:click={() => showAllScan = false}>
-                Show less
-              </button>
-            {/if}
           </div>
+
+          {#if !showAllScan && hiddenScanCount > 0}
+            <button class="show-more-btn" on:click={() => showAllScan = true}>
+              Show {hiddenScanCount} more devices
+            </button>
+          {:else if showAllScan && hiddenScanCount > 0}
+            <button class="show-more-btn" on:click={() => showAllScan = false}>
+              Show less
+            </button>
+          {/if}
         {/if}
       {/if}
     </div>
@@ -654,78 +687,113 @@
   .net-sum-bad { color: var(--color-error, #ef4444); background: rgba(239,68,68,.1); }
 
 
-  /* Network Table */
-  .network-table { padding: var(--sp-2) var(--sp-4) var(--sp-3); }
-  .net-table-head--wide {
+  /* ─── Device Card Grid ─────────────────────────────────── */
+  .device-grid {
     display: grid;
-    grid-template-columns: 1.6fr 110px 130px 1fr 80px 100px;
-    gap: var(--sp-2); padding: var(--sp-1) var(--sp-2);
-    font-size: var(--text-2xs); font-weight: 600; color: var(--color-text-muted);
-    text-transform: uppercase; letter-spacing: 0.04em;
-    border-bottom: 1px solid var(--color-border);
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: var(--sp-2);
+    padding: var(--sp-3) var(--sp-4) var(--sp-4);
   }
-  .net-table-row--wide {
-    display: grid;
-    grid-template-columns: 1.6fr 110px 130px 1fr 80px 100px;
-    gap: var(--sp-2); padding: var(--sp-2);
-    font-size: var(--text-xs); color: var(--color-text);
-    border-bottom: 1px solid var(--color-border);
-    transition: background var(--duration-fast);
-    align-items: center;
+  .device-card {
+    display: flex; flex-direction: column; gap: 6px;
+    padding: var(--sp-3);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--color-border);
+    background: var(--color-surface-hover, rgba(255,255,255,.02));
+    transition: border-color var(--duration-fast), box-shadow var(--duration-fast);
   }
-  .net-table-row--wide:last-of-type { border-bottom: none; }
-  .net-table-row--wide:hover { background: var(--color-surface-hover); }
-  .nth-device {
-    display: flex; align-items: center; gap: var(--sp-2);
-    overflow: hidden; min-width: 0;
+  .device-card:hover {
+    border-color: var(--color-border-hover);
+    box-shadow: 0 2px 8px rgba(0,0,0,.08);
   }
-  .dev-ha-name {
-    font-weight: 600; color: var(--color-text);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  .device-card--ha {
+    border-color: rgba(99,102,241,.2);
   }
-  .dev-ip-fallback {
-    font-family: var(--font-mono); font-size: var(--text-2xs);
+  .device-card--ha:hover {
+    border-color: rgba(99,102,241,.4);
+  }
+
+  .device-card-top {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-2);
+  }
+  .device-card-name {
+    font-size: var(--text-sm); font-weight: 600; color: var(--color-text);
+    line-height: 1.3; word-break: break-word;
+  }
+
+  /* Status chip */
+  .device-status-chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: var(--radius-full);
+    font-size: var(--text-2xs); font-weight: 700;
+    white-space: nowrap; flex-shrink: 0;
+    background: var(--color-surface); border: 1px solid var(--color-border);
     color: var(--color-text-muted);
   }
-  .dev-area-badge {
+  .chip-ok { color: var(--color-success); background: var(--color-success-soft); border-color: transparent; }
+  .chip-bad { color: var(--color-error, #ef4444); background: rgba(239,68,68,.1); border-color: transparent; }
+  .chip-stale { color: var(--color-warning, #f59e0b); background: rgba(245,158,11,.1); border-color: transparent; }
+  .chip-dot {
+    width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0;
+    background: currentColor;
+  }
+  .chip-dot.dot-ok { background: var(--color-success); }
+  .chip-dot.dot-bad { background: var(--color-error, #ef4444); }
+
+  /* IP address — most prominent data point */
+  .device-card-ip {
+    font-family: var(--font-mono); font-size: var(--text-md);
+    font-weight: 700; color: var(--color-primary);
+    letter-spacing: -0.02em; line-height: 1;
+  }
+
+  /* Meta row: MAC · iface · hostname */
+  .device-card-meta {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+    margin-top: 2px;
+  }
+  .dmeta-item {
     font-size: var(--text-2xs); color: var(--color-text-muted);
-    background: var(--color-surface-hover); border-radius: var(--radius-full);
-    padding: 1px 6px; flex-shrink: 0;
+    display: flex; align-items: center; gap: 3px;
   }
-  .nth-ip {
-    font-family: var(--font-mono); font-size: var(--text-2xs);
-    color: var(--color-primary); font-weight: 600;
+  .dmeta-mac { font-family: var(--font-mono); letter-spacing: 0.01em; }
+  .dmeta-iface {
+    font-family: var(--font-mono);
+    padding: 1px 5px; border-radius: 3px;
+    background: var(--color-surface); border: 1px solid var(--color-border);
   }
-  .nth-mac {
-    font-family: var(--font-mono); font-size: var(--text-2xs);
-    color: var(--color-text-secondary);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  .dmeta-host { font-style: italic; }
+
+  /* HA badges */
+  .device-card-badges {
+    display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-top: 2px;
   }
-  .nth-host {
-    font-size: var(--text-2xs); color: var(--color-text-muted);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .nth-iface {
-    font-family: var(--font-mono); font-size: var(--text-2xs);
+  .dbadge {
+    font-size: var(--text-2xs); padding: 1px 7px; border-radius: var(--radius-full);
+    background: var(--color-surface); border: 1px solid var(--color-border);
     color: var(--color-text-muted);
   }
-  .nth-status {
-    display: flex; align-items: center; gap: 4px;
-    font-size: var(--text-2xs); font-weight: 600;
+  .dbadge--ha {
+    color: var(--color-primary);
+    background: var(--color-primary-soft, rgba(99,102,241,.08));
+    border-color: transparent;
   }
-  .net-state-dot {
-    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
-    background: var(--color-text-muted);
+
+  /* Empty / loading states */
+  .scan-empty {
+    display: flex; flex-direction: column; align-items: center; gap: var(--sp-2);
+    padding: var(--sp-8) var(--sp-4); color: var(--color-text-muted); text-align: center;
   }
-  .net-state-dot.dot-ok { background: var(--color-success); }
-  .net-state-dot.dot-bad { background: var(--color-error, #ef4444); }
-  .net-state-dot.dot-stale { background: var(--color-warning, #f59e0b); }
+  .scan-empty svg { width: 32px; height: 32px; opacity: 0.35; }
+  .scan-empty p { font-size: var(--text-sm); margin: 0; }
+  .scan-empty-hint { font-size: var(--text-xs) !important; opacity: 0.7; }
+
   .show-more-btn {
     display: block; width: 100%; padding: var(--sp-2);
     text-align: center; font-size: var(--text-xs); font-weight: 600;
     color: var(--color-primary); background: none; border: none;
     border-top: 1px solid var(--color-border); cursor: pointer;
-    transition: background var(--duration-fast);
+    transition: background var(--duration-fast); font: inherit;
   }
   .show-more-btn:hover { background: var(--color-surface-hover); }
 
@@ -735,9 +803,7 @@
     border-bottom: 1px solid var(--color-border);
   }
   .section-header-wrap.header-collapsed { border-bottom-color: transparent; }
-  .section-header-wrap .section-header {
-    flex: 1; border-bottom: none;
-  }
+  .section-header-wrap .section-header { flex: 1; border-bottom: none; }
   .scan-btn {
     display: flex; align-items: center; gap: 5px;
     padding: 4px 10px; border-radius: var(--radius-full);
@@ -750,19 +816,19 @@
     margin-right: var(--sp-3);
   }
   .scan-btn:hover:not(:disabled) {
-    background: var(--color-primary-soft, rgba(99,102,241,.15));
+    background: var(--color-primary-soft, rgba(99,102,241,.18));
     border-color: var(--color-primary);
   }
-  .scan-btn:disabled { opacity: 0.6; cursor: default; }
+  .scan-btn:disabled { opacity: 0.55; cursor: default; }
   .scan-btn svg { width: 12px; height: 12px; flex-shrink: 0; }
   .scan-spinner {
     width: 10px; height: 10px; border-radius: 50%;
-    border: 2px solid rgba(99,102,241,.3); border-top-color: var(--color-primary);
+    border: 2px solid rgba(99,102,241,.25); border-top-color: var(--color-primary);
     animation: spin 0.6s linear infinite; flex-shrink: 0;
   }
   .scan-loading-state {
     display: flex; align-items: center; gap: var(--sp-3);
-    padding: var(--sp-4) var(--sp-5); color: var(--color-text-muted);
+    padding: var(--sp-5) var(--sp-5); color: var(--color-text-muted);
     font-size: var(--text-sm);
   }
   .scan-error-note { color: var(--color-error, #ef4444) !important; }
@@ -908,15 +974,11 @@
     .top-integrations { grid-template-columns: repeat(2, 1fr); }
     .integration-name { width: 100px; }
     .offline-times { flex-direction: column; align-items: flex-start; }
-    .net-table-head--wide { grid-template-columns: 1.2fr 90px 100px; }
-    .net-table-row--wide { grid-template-columns: 1.2fr 90px 100px; }
-    .nth-host, .nth-iface { display: none; }
+    .device-grid { grid-template-columns: 1fr; padding: var(--sp-2) var(--sp-3) var(--sp-3); gap: var(--sp-2); }
     .section-summary { display: none; }
   }
   @media (max-width: 400px) {
     .kpi-grid { grid-template-columns: 1fr; }
-    .net-table-head--wide { grid-template-columns: 1fr 80px; }
-    .net-table-row--wide { grid-template-columns: 1fr 80px; }
-    .nth-mac, .nth-host, .nth-iface, .nth-status { display: none; }
+    .device-grid { padding: var(--sp-2); }
   }
 </style>
