@@ -32,8 +32,8 @@
       scanError = e.message;
     }
     scanReady = true;
-    // If ARP table is nearly empty, kick off a full scan automatically
-    if (!scanError && (scanData?.devices?.length ?? 0) < 3) {
+    // Always auto-scan on first load — ensures fresh, complete LAN device list
+    if (!scanError) {
       runNetworkScan();
     }
   });

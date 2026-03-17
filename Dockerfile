@@ -22,7 +22,9 @@ WORKDIR /app
 # so install Python explicitly instead of assuming a python-enabled base.
 RUN apk add --no-cache \
 	python3 \
-	py3-pip
+	py3-pip \
+	iputils \
+	iproute2
 
 COPY backend/requirements.txt .
 RUN python3 -m pip install --no-cache-dir --break-system-packages -r requirements.txt
@@ -41,6 +43,6 @@ COPY frontend/logo.png ./frontend/dist/logo.png
 COPY run.sh /
 RUN chmod +x /run.sh
 
-EXPOSE 8099
+EXPOSE 8765
 
 CMD ["/run.sh"]

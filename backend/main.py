@@ -1206,6 +1206,40 @@ async def _ping_sweep(base: str) -> None:
     await asyncio.gather(*[_ping(f"{base}.{i}") for i in range(1, 255)])
 
 
+async def _tcp_probe_subnet(base: str) -> None:
+    """Pure-Python TCP connect probe — no ping binary, no NET_RAW needed.
+    Opens connections to common ports to detect live hosts and warm the ARP cache.
+    """
+    PORTS = (80, 443, 22, 8080, 8123, 53, 139, 445, 8888, 7)
+    sem = asyncio.Semaphore(64)
+
+    async def _probe(ip: str) -> None:
+        async with sem:
+            for port in PORTS:
+                try:
+                    reader, writer = await asyncio.wait_for(
+                        asyncio.open_connection(ip, port), timeout=0.5,
+                    )
+                    writer.close()
+                    try:
+                        await writer.wait_closed()
+                    except Exception:
+                        pass
+                    return  # one successful connect is enough to warm ARP
+                except Exception:
+                    pass
+
+    await asyncio.gather(*[_probe(f"{base}.{i}") for i in range(1, 255)])
+
+
+async def _scan_subnet(base: str) -> None:
+    """Run ping sweep AND TCP probe concurrently for maximum ARP warming."""
+    await asyncio.gather(
+        _ping_sweep(base),
+        _tcp_probe_subnet(base),
+    )
+
+
 @app.get("/api/network-devices")
 async def api_network_devices(scan: bool = Query(default=False)) -> dict[str, Any]:
     """
@@ -1240,7 +1274,7 @@ async def api_network_devices(scan: bool = Query(default=False)) -> dict[str, An
     # Always detect local subnets; optionally sweep them all
     subnets = await _get_local_subnets()
     if scan and subnets:
-        await asyncio.gather(*[_ping_sweep(s) for s in subnets])
+        await asyncio.gather(*[_scan_subnet(s) for s in subnets])
 
     # Read ARP / neighbor table
     arp_entries = await _read_arp_table()
