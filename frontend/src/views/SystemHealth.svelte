@@ -137,6 +137,7 @@
   $: visibleScanDevices = showAllScan ? scanDevices : scanDevices.slice(0, SCAN_PREVIEW);
   $: hiddenScanCount = Math.max(0, scanDevices.length - SCAN_PREVIEW);
   $: isScanPending = !scanReady && !scanLoading && !scanError;
+  $: scanSubnets = scanData?.subnets || [];
 
   // Collapsible section state
   let sectionOpen = {
@@ -300,7 +301,7 @@
           class:is-scanning={scanLoading}
           on:click={runNetworkScan}
           disabled={scanLoading}
-          title="Ping-sweep the /24 subnet to discover all active devices (~5s)"
+          title={scanSubnets.length ? `Ping-sweep: ${scanSubnets.map(s => s + '.x').join(', ')}` : 'Ping-sweep the LAN to discover all active devices'}
         >
           {#if scanLoading}
             <span class="scan-spinner" />
@@ -316,7 +317,13 @@
         {#if scanLoading}
           <div class="scan-loading-state">
             <div class="spinner" />
-            <span>Pinging local network, this takes ~5 seconds…</span>
+            <span>
+              Pinging {scanSubnets.length > 1 ? `${scanSubnets.length} subnets` : 'subnet'}
+              {#if scanSubnets.length}
+                <span class="scan-subnet-hint">({scanSubnets.map(s => s + '.x').join(', ')})</span>
+              {/if}
+              — this takes ~{scanSubnets.length * 5}s…
+            </span>
           </div>
         {:else if isScanPending}
           <div class="scan-loading-state">
@@ -328,8 +335,11 @@
         {:else if scanDevices.length === 0}
           <div class="scan-empty">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M12 20h.01M8.56 16.11a6 6 0 016.88 0M4.93 12.55a11 11 0 0114.14 0M1.42 9a15.91 15.91 0 0121.16 0"/></svg>
-            <p>No devices found in ARP table.</p>
-            <p class="scan-empty-hint">Press <strong>Scan</strong> to ping-sweep the subnet and discover active devices.</p>
+            <p>No LAN devices found in ARP table.</p>
+            {#if scanSubnets.length}
+              <p class="scan-empty-hint">Detected subnets: <strong>{scanSubnets.map(s => s + '.0/24').join(', ')}</strong></p>
+            {/if}
+            <p class="scan-empty-hint">Press <strong>Scan</strong> to ping-sweep and discover all active devices.</p>
           </div>
         {:else}
           <div class="device-grid">
@@ -834,6 +844,10 @@
     display: flex; align-items: center; gap: var(--sp-3);
     padding: var(--sp-5) var(--sp-5); color: var(--color-text-muted);
     font-size: var(--text-sm);
+  }
+  .scan-subnet-hint {
+    font-family: var(--font-mono); font-size: var(--text-xs);
+    color: var(--color-primary); opacity: 0.8;
   }
   .scan-error-note { color: var(--color-error, #ef4444) !important; }
   .net-sum-ha {

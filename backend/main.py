@@ -1104,49 +1104,37 @@ async def _resolve_hostname(ip: str) -> str:
         return ""
 
 
-async def _get_local_subnet() -> str | None:
+_INTERNAL_PREFIXES = (
+    "172.17.",   # Docker default bridge
+    "172.30.",   # HAOS hassio add-on network
+    "172.31.",   # HAOS alternate
+    "127.",      # loopback
+    "169.254.",  # link-local
+    "::1",       # IPv6 loopback
+    "fe80:",     # IPv6 link-local
+)
+
+def _is_internal_ip(ip: str) -> bool:
+    return any(ip.startswith(p) for p in _INTERNAL_PREFIXES)
+
+def _ip_base(ip: str) -> str:
+    return ".".join(ip.split(".")[:3])
+
+
+async def _get_local_subnets() -> list[str]:
     """
-    Find the home LAN /24 base (e.g. '192.168.1') via multiple strategies.
-    Skips Docker/HAOS internal ranges (172.17.x, 172.30.x).
+    Return ALL unique home-LAN /24 bases on this host (e.g. ['192.168.88', '192.168.89']).
+    Skips Docker/HAOS internal ranges. Tries multiple strategies and collects all of them.
     """
-    _docker_prefixes = ("172.17.", "172.30.", "172.16.", "127.", "169.254.")
+    subnets: list[str] = []
 
-    def _is_lan_ip(ip: str) -> bool:
-        if any(ip.startswith(p) for p in _docker_prefixes):
-            return False
-        return bool(re.match(r'^(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.)', ip))
+    def _add(ip: str) -> None:
+        if not _is_internal_ip(ip) and re.match(r'^\d+\.\d+\.\d+\.\d+$', ip):
+            base = _ip_base(ip)
+            if base not in subnets:
+                subnets.append(base)
 
-    def _base(ip: str) -> str:
-        return ".".join(ip.split(".")[:3])
-
-    # Strategy 1: ip route show default — look for 'src' field
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "ip", "route", "show", "default",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
-        parts = stdout.decode().split()
-        for i, p in enumerate(parts):
-            if p == "src" and i + 1 < len(parts) and _is_lan_ip(parts[i + 1]):
-                return _base(parts[i + 1])
-    except Exception:
-        pass
-
-    # Strategy 2: hostname -I — pick first LAN-looking IP
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "hostname", "-I",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
-        for ip in stdout.decode().split():
-            if _is_lan_ip(ip):
-                return _base(ip)
-    except Exception:
-        pass
-
-    # Strategy 3: ip addr show — scan all interfaces
+    # Strategy 1: ip addr show — most complete, lists every interface
     try:
         proc = await asyncio.create_subprocess_exec(
             "ip", "addr", "show",
@@ -1155,21 +1143,48 @@ async def _get_local_subnet() -> str | None:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
         for line in stdout.decode().splitlines():
             m = re.search(r'inet (\d+\.\d+\.\d+\.\d+)/', line)
-            if m and _is_lan_ip(m.group(1)):
-                return _base(m.group(1))
+            if m:
+                _add(m.group(1))
     except Exception:
         pass
 
-    # Strategy 4: parse ARP table itself to infer subnet
+    # Strategy 2: ip route show (non-default) — catches subnets with no host IP listed
     try:
-        entries = await _read_arp_table()
-        for e in entries:
-            if _is_lan_ip(e["ip"]):
-                return _base(e["ip"])
+        proc = await asyncio.create_subprocess_exec(
+            "ip", "route", "show",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+        for line in stdout.decode().splitlines():
+            # e.g. "192.168.88.0/24 dev eth0 proto kernel  src 192.168.88.5"
+            m = re.search(r'src (\d+\.\d+\.\d+\.\d+)', line)
+            if m:
+                _add(m.group(1))
     except Exception:
         pass
 
-    return None
+    # Strategy 3: hostname -I
+    if not subnets:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "hostname", "-I",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+            for ip in stdout.decode().split():
+                _add(ip)
+        except Exception:
+            pass
+
+    # Strategy 4: infer from existing ARP entries
+    if not subnets:
+        try:
+            for e in await _read_arp_table():
+                _add(e["ip"])
+        except Exception:
+            pass
+
+    return subnets
 
 
 async def _ping_sweep(base: str) -> None:
@@ -1195,7 +1210,8 @@ async def _ping_sweep(base: str) -> None:
 async def api_network_devices(scan: bool = Query(default=False)) -> dict[str, Any]:
     """
     Network device discovery: ARP table merged with HA entity data.
-    Pass ?scan=true to run a /24 ping sweep first (~5 s, warms ARP table).
+    Internal Docker/HAOS ranges (172.30.x, 172.17.x) are always filtered out.
+    Pass ?scan=true to run a ping sweep across ALL detected LAN subnets (~5–15 s).
     """
     # Build lookup maps from HA entity registry
     ha_by_ip: dict[str, dict[str, Any]] = {}
@@ -1221,14 +1237,16 @@ async def api_network_devices(scan: bool = Query(default=False)) -> dict[str, An
             if mac:
                 ha_by_mac[mac.strip().upper()] = ha_data
 
-    # Optional ping sweep to populate ARP table
-    if scan:
-        subnet = await _get_local_subnet()
-        if subnet:
-            await _ping_sweep(subnet)
+    # Always detect local subnets; optionally sweep them all
+    subnets = await _get_local_subnets()
+    if scan and subnets:
+        await asyncio.gather(*[_ping_sweep(s) for s in subnets])
 
     # Read ARP / neighbor table
     arp_entries = await _read_arp_table()
+
+    # Filter out Docker/HAOS internal addresses — only show real LAN devices
+    arp_entries = [e for e in arp_entries if not _is_internal_ip(e["ip"])]
 
     # Resolve hostnames concurrently
     hostnames = await asyncio.gather(*[_resolve_hostname(e["ip"]) for e in arp_entries])
@@ -1255,7 +1273,7 @@ async def api_network_devices(scan: bool = Query(default=False)) -> dict[str, An
             "ha_area": ha.get("area", ""),
         })
 
-    # Sort: reachable first, then numerically by IP octets
+    # Sort: reachable first, then by subnet, then numerically by last octet
     def _sort_key(d: dict[str, Any]) -> tuple:
         octets = [int(x) for x in d["ip"].split(".") if x.isdigit()]
         return (0 if d["reachable"] else 1, octets)
@@ -1267,6 +1285,7 @@ async def api_network_devices(scan: bool = Query(default=False)) -> dict[str, An
         "total": len(devices),
         "reachable": sum(1 for d in devices if d["reachable"]),
         "ha_matched": sum(1 for d in devices if d["ha_entity_id"]),
+        "subnets": subnets,
         "scanned": scan,
     }
 
