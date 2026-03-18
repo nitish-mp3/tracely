@@ -38,7 +38,7 @@ def _warn_missing_log_throttled(paths_checked: list[str]) -> None:
     global _last_missing_log_warning_at
     now = time.time()
     if now - _last_missing_log_warning_at >= _MISSING_LOG_WARN_INTERVAL_SECONDS:
-        logger.warning("logs.ha_core_log_not_found", paths_checked=paths_checked)
+        logger.debug("logs.ha_core_log_not_found", paths_checked=paths_checked)
         _last_missing_log_warning_at = now
 
 
@@ -240,6 +240,46 @@ def decode_log_snapshot(snapshot: str, encoded: bool = True) -> Optional[str]:
     except Exception as e:
         logger.exception("logs.decode_error", error=str(e))
         return None
+
+
+def summarize_log_text(text: str, source: str) -> dict[str, any]:
+    """Build a standard log summary payload from raw log text."""
+    try:
+        if not text:
+            return {
+                "available": False,
+                "error": "Empty log text",
+            }
+
+        compressed = gzip.compress(text.encode(), compresslevel=6)
+        snapshot = base64.b64encode(compressed).decode("ascii")
+
+        lines = text.split("\n")
+        error_count = sum(1 for line in lines if "[error" in line.lower())
+        warning_count = sum(1 for line in lines if "[warning" in line.lower())
+
+        last_entry = ""
+        if lines:
+            last_line = lines[-1]
+            if "[" in last_line:
+                last_entry = last_line.split("[")[0].strip()
+
+        return {
+            "available": True,
+            "source": source,
+            "snapshot": snapshot,
+            "size_bytes": len(text),
+            "line_count": len([l for l in lines if l.strip()]),
+            "error_count": error_count,
+            "warning_count": warning_count,
+            "last_entry_ts": last_entry,
+        }
+    except Exception as e:
+        logger.exception("logs.summarize_text_error", error=str(e))
+        return {
+            "available": False,
+            "error": str(e),
+        }
 
 
 def parse_log_lines(

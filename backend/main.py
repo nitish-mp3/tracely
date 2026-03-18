@@ -1853,6 +1853,14 @@ async def api_logs(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
     """
     try:
         summary = logs.get_log_summary(max_bytes=500_000)
+
+        if not summary.get("available") and ha_client:
+            remote_log = await ha_client.fetch_error_log(max_bytes=500_000)
+            if remote_log:
+                summary = logs.summarize_log_text(
+                    remote_log,
+                    source="ha_api_error_log",
+                )
         
         if not summary.get("available"):
             return {

@@ -95,6 +95,32 @@ class HAClient:
             logger.exception("ha_client.fetch_states_error")
             return []
 
+    async def fetch_error_log(self, max_bytes: int = 500_000) -> str | None:
+        """Fetch HA error log via REST API as fallback when file access fails."""
+        http_url = (
+            self._ws_url
+            .replace("ws://", "http://")
+            .replace("wss://", "https://")
+            .replace("/api/websocket", "/api/error_log")
+            .replace("/core/websocket", "/core/api/error_log")
+        )
+        headers = {"Authorization": f"Bearer {self._token}"}
+        if not self._session or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with self._session.get(http_url, headers=headers, timeout=timeout) as resp:
+                if resp.status != 200:
+                    logger.warning("ha_client.fetch_error_log_failed", status=resp.status)
+                    return None
+                text = await resp.text()
+                if len(text) > max_bytes:
+                    text = text[-max_bytes:]
+                return text
+        except Exception:
+            logger.exception("ha_client.fetch_error_log_error")
+            return None
+
     async def _ws_command(self, command: dict[str, Any]) -> dict[str, Any] | None:
         """Send a one-shot WS command and return the result (needs active connection)."""
         if not self._ws or self._ws.closed:

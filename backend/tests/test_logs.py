@@ -10,6 +10,7 @@ from backend.logs import (
     decode_log_snapshot,
     parse_log_lines,
     get_log_summary,
+    summarize_log_text,
 )
 
 
@@ -147,3 +148,22 @@ class TestLogs:
             assert len(lines) <= 10
         finally:
             Path(filepath).unlink()
+
+    def test_summarize_log_text(self):
+        """summarize_log_text should return canonical summary shape."""
+        text = (
+            "2026-03-18 11:00:00 [info] Starting\n"
+            "2026-03-18 11:00:01 [warning] Warning 1\n"
+            "2026-03-18 11:00:02 [error] Error 1\n"
+        )
+
+        summary = summarize_log_text(text, source="ha_api_error_log")
+        assert summary.get("available") is True
+        assert summary.get("source") == "ha_api_error_log"
+        assert summary.get("warning_count") == 1
+        assert summary.get("error_count") == 1
+        assert summary.get("line_count") == 3
+        snapshot = summary.get("snapshot")
+        assert snapshot
+        decoded = decode_log_snapshot(snapshot, encoded=True)
+        assert decoded and "Warning 1" in decoded

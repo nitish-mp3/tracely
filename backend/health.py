@@ -71,6 +71,14 @@ async def get_health(
 
     # Capture HA core log summary
     log_summary = logs.get_log_summary(max_bytes=100_000)
+    if not log_summary.get("available"):
+        remote_log = await ha_client.fetch_error_log(max_bytes=100_000)
+        if remote_log:
+            log_summary = logs.summarize_log_text(
+                remote_log,
+                source="ha_api_error_log",
+            )
+
     ha_core_log = None
     if log_summary.get("available"):
         ha_core_log = LogInfo(
