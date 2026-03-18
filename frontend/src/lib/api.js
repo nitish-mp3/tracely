@@ -92,6 +92,11 @@ export async function getSystemHealth() {
   return request('/api/system');
 }
 
+export async function getLifecycleEvents(limit = 100) {
+  const qs = new URLSearchParams({ limit });
+  return request(`/api/lifecycle?${qs}`);
+}
+
 export async function getNetworkDevices(scan = false) {
   return request(`/api/network-devices${scan ? '?scan=true' : ''}`);
 }

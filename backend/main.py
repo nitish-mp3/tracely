@@ -1792,6 +1792,23 @@ async def api_incidents(
     }
 
 
+@app.get("/api/lifecycle")
+async def api_lifecycle(
+    limit: int = Query(100, ge=1, le=500),
+) -> dict[str, Any]:
+    """Fetch HA lifecycle events (start, stop, restart) from incidents log."""
+    rows, total = await storage.get_incidents(
+        limit=limit,
+        offset=0,
+        incident_type="ha_lifecycle",
+        severity=None,
+    )
+    return {
+        "total": total,
+        "items": [_incident_to_response(row).model_dump() for row in rows],
+    }
+
+
 @app.get("/health", response_model=HealthResponse)
 async def api_health() -> HealthResponse:
     client = ha_client or HAClient(settings, on_event=_process_ha_event)

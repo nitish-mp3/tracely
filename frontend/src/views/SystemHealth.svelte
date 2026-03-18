@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import DomainIcon from '../components/DomainIcon.svelte';
-  import { getSystemHealth, getNetworkDevices } from '../lib/api.js';
+  import { getSystemHealth, getNetworkDevices, getLifecycleEvents } from '../lib/api.js';
   import { selectedEntityTag } from '../stores/events.js';
 
   let data = null;
@@ -9,6 +9,11 @@
   let error = null;
   let showAllNetwork = false;
   const NETWORK_PREVIEW = 5;
+
+  // Lifecycle events state
+  let lifecycleData = null;
+  let lifecycleLoading = true;
+  let lifecycleError = null;
 
   // ARP-based network scan state
   let scanData = null;
@@ -25,6 +30,15 @@
       error = e.message;
     }
     loading = false;
+    
+    // Load lifecycle events
+    try {
+      lifecycleData = await getLifecycleEvents(100);
+    } catch (e) {
+      lifecycleError = e.message;
+    }
+    lifecycleLoading = false;
+    
     // Load ARP network devices; auto-scan if table is empty
     try {
       scanData = await getNetworkDevices(false);
@@ -154,6 +168,7 @@
     domains: true,
     unavailable: false,  // closed by default — can be 1000+ items
     offline: true,
+    lifecycle: true,
     incidents: true,
   };
   function toggleSection(key) { sectionOpen[key] = !sectionOpen[key]; sectionOpen = sectionOpen; }
@@ -597,6 +612,57 @@
       {/if}
     </div>
 
+    <!-- HA Lifecycle Events -->
+    <div class="section-card" class:lifecycle-card={lifecycleData?.items?.length > 0}>
+      <button class="section-header" on:click={() => toggleSection('lifecycle')} aria-expanded={sectionOpen.lifecycle}>
+        <h3 class="section-title">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 1v14M1 8h14" /><circle cx="8" cy="8" r="6" /></svg>
+          HA Lifecycle Events
+          {#if lifecycleData?.items?.length > 0}
+            <span class="section-count">{lifecycleData.items.length}</span>
+          {/if}
+        </h3>
+        <svg class="section-chevron" class:open={sectionOpen.lifecycle} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
+      </button>
+      {#if sectionOpen.lifecycle}
+        {#if lifecycleLoading}
+          <div class="loading-state" style="padding: 24px; text-align: center;">
+            <div class="spinner" style="display: inline-block; margin-right: 12px;" />
+            <span>Loading lifecycle events…</span>
+          </div>
+        {:else if lifecycleError}
+          <p class="empty-note">{lifecycleError}</p>
+        {:else if lifecycleData?.items?.length > 0}
+          <div class="lifecycle-timeline">
+            {#each lifecycleData.items as event (event.id)}
+              <div class="lifecycle-event" class:is-restart={event.source_includes_restart} class:is-start={event.source === 'homeassistant_start'} class:is-stop={event.source === 'homeassistant_stop'}>
+                <div class="lifecycle-dot" />
+                <div class="lifecycle-content">
+                  <div class="lifecycle-header">
+                    <span class="lifecycle-event-type">{event.source || event.incident_type}</span>
+                    <span class="lifecycle-time">{formatTime(event.timestamp)}</span>
+                  </div>
+                  <div class="lifecycle-message">{event.message}</div>
+                  {#if event.details}
+                    <div class="lifecycle-details">
+                      {#if event.details.reason}
+                        <span class="detail-badge">Reason: {event.details.reason}</span>
+                      {/if}
+                      {#if event.details.duration_ms}
+                        <span class="detail-badge">Downtime: {formatDuration(event.details.duration_ms)}</span>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="empty-note">No HA lifecycle events recorded yet. This tracks system restarts, starts, and stops.</p>
+        {/if}
+      {/if}
+    </div>
+
     <!-- Runtime / Crash Forensics -->
     <div class="section-card" class:warn-card={criticalIncidents > 0}>
       <button class="section-header" on:click={() => toggleSection('incidents')} aria-expanded={sectionOpen.incidents}>
@@ -1030,6 +1096,106 @@
     color: var(--color-text-secondary); font-family: var(--font-mono);
   }
   .offline-duration.duration-ongoing { color: var(--color-error, #ef4444); }
+
+  /* HA Lifecycle Events Timeline */
+  .lifecycle-card {
+    background: linear-gradient(135deg, var(--color-surface) 0%, rgba(79, 172, 254, 0.03) 100%);
+  }
+  .lifecycle-timeline {
+    padding: var(--sp-2) var(--sp-4) var(--sp-3);
+    position: relative;
+  }
+  .lifecycle-timeline::before {
+    content: '';
+    position: absolute;
+    left: calc(var(--sp-4) + 8px);
+    top: var(--sp-4);
+    bottom: 0;
+    width: 2px;
+    background: linear-gradient(180deg, var(--color-primary, #4f-acfe) 0%, transparent 100%);
+    opacity: 0.3;
+  }
+  .lifecycle-event {
+    position: relative;
+    display: flex;
+    gap: var(--sp-3);
+    margin-bottom: var(--sp-3);
+    padding-left: 0;
+  }
+  .lifecycle-event:last-child {
+    margin-bottom: 0;
+  }
+  .lifecycle-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 3px solid var(--color-primary, #4f-acfe);
+    background: var(--color-surface);
+    flex-shrink: 0;
+    margin-top: 2px;
+    box-shadow: 0 0 0 3px rgba(79, 172, 254, 0.1);
+  }
+  .lifecycle-event.is-restart .lifecycle-dot {
+    border-color: #f59e0b;
+    box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.1);
+  }
+  .lifecycle-event.is-start .lifecycle-dot {
+    border-color: #22c55e;
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
+  }
+  .lifecycle-event.is-stop .lifecycle-dot {
+    border-color: #ef4444;
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1);
+  }
+  .lifecycle-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding-top: 1px;
+  }
+  .lifecycle-header {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+  }
+  .lifecycle-event-type {
+    font-size: var(--text-sm);
+    font-weight: 700;
+    color: var(--color-text);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    flex-shrink: 0;
+  }
+  .lifecycle-event.is-restart .lifecycle-event-type { color: #f59e0b; }
+  .lifecycle-event.is-start .lifecycle-event-type { color: #22c55e; }
+  .lifecycle-event.is-stop .lifecycle-event-type { color: #ef4444; }
+  .lifecycle-time {
+    font-size: var(--text-xs);
+    font-family: var(--font-mono);
+    color: var(--color-text-muted);
+    margin-left: auto;
+    flex-shrink: 0;
+  }
+  .lifecycle-message {
+    font-size: var(--text-sm);
+    color: var(--color-text-secondary);
+    line-height: 1.4;
+  }
+  .lifecycle-details {
+    display: flex;
+    gap: var(--sp-1);
+    flex-wrap: wrap;
+  }
+  .detail-badge {
+    font-size: var(--text-xs);
+    padding: 3px 10px;
+    border-radius: var(--radius-full);
+    background: var(--color-bg-elevated);
+    color: var(--color-text-muted);
+    font-weight: 500;
+  }
 
   /* Runtime incidents */
   .incident-list {

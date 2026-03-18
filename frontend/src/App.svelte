@@ -428,6 +428,7 @@
     color: var(--color-error);
     font-weight: 500;
     transition: all var(--duration-normal);
+    min-width: 80px;
   }
   .status-chip.connected {
     background: var(--color-success-soft);
@@ -456,53 +457,203 @@
     display: flex;
   }
 
-  /* ─── Responsive ─────────────────────────────────── */
+  /* ─── Responsive Mobile-First ────────────────────── */
 
+  /* Tablets: 768px and below */
+  @media (max-width: 1024px) {
+    .search-input {
+      width: 160px;
+    }
+    .search-input:focus {
+      width: 220px;
+    }
+    .nav-pill {
+      padding: 6px 12px;
+      font-size: var(--text-xs);
+      gap: 4px;
+    }
+  }
+
+  /* Small tablets & large phones: 768px and below */
   @media (max-width: 768px) {
+    .app-header {
+      padding: 0 var(--sp-4);
+      height: auto;
+      min-height: 48px;
+      flex-wrap: wrap;
+      gap: var(--sp-2);
+    }
+
+    .header-left {
+      flex: 1;
+      min-width: 0;
+      gap: var(--sp-2);
+    }
+
+    /* Hide search bar on tablets, it's too much real estate */
     .search-wrapper {
       display: none;
     }
+
     .header-divider {
       display: none;
     }
-    .status-label, .status-count {
+
+    /* Compact nav pills */
+    .nav-pills {
+      gap: 1px;
+      padding: 2px;
+    }
+
+    .nav-pill {
+      padding: 5px 10px;
+      font-size: var(--text-xs);
+      gap: 3px;
+    }
+
+    .nav-icon {
+      width: 13px;
+      height: 13px;
+    }
+
+    .header-right {
+      flex: 0 1 auto;
+      gap: var(--sp-2);
+    }
+
+    .status-label {
       display: none;
     }
-    .status-chip {
-      padding: 6px;
-      min-width: 0;
+
+    .status-count {
+      display: none;
     }
-    .nav-pill {
-      padding: 6px 10px;
-      font-size: var(--text-xs);
+
+    .status-chip {
+      padding: 5px 10px;
+      min-width: 0;
+      font-size: var(--text-2xs);
+    }
+
+    .logo-img {
+      width: 24px;
+      height: 24px;
+    }
+
+    .logo-text {
+      font-size: var(--text-sm);
+    }
+
+    .icon-btn {
+      width: 32px;
+      height: 32px;
+    }
+
+    .icon-btn svg {
+      width: 14px;
+      height: 14px;
     }
   }
 
+  /* Mobile phones: 480px and below */
   @media (max-width: 480px) {
-    .logo-text {
-      display: none;
-    }
-    .nav-pills {
-      padding: 2px;
-    }
     .app-header {
       padding: 0 var(--sp-3);
       gap: var(--sp-2);
+      min-height: 44px;
+    }
+
+    .header-left {
+      gap: var(--sp-1);
+    }
+
+    .logo-text {
+      display: none;
+    }
+
+    .logo-btn {
+      padding: var(--sp-1);
+    }
+
+    .nav-pills {
+      padding: 2px;
+      gap: 0;
+    }
+
+    .nav-pill {
+      padding: 5px 8px;
+      font-size: var(--text-2xs);
+      gap: 2px;
+    }
+
+    .nav-icon {
+      width: 12px;
+      height: 12px;
+    }
+
+    .header-right {
+      gap: var(--sp-1);
+    }
+
+    .icon-btn {
+      width: 30px;
+      height: 30px;
+    }
+
+    .icon-btn svg {
+      width: 13px;
+      height: 13px;
+    }
+
+    .status-chip {
+      padding: 4px 8px;
+      font-size: var(--text-2xs);
+      gap: 3px;
+    }
+
+    .status-dot-inner {
+      width: 5px;
+      height: 5px;
     }
   }
 
-  @media (max-width: 380px) {
-    /* On tiny phones: hide nav text labels, show only icons */
+  /* Tiny phones: 360px and below */
+  @media (max-width: 360px) {
+    .app-header {
+      padding: 0 var(--sp-2);
+      gap: var(--sp-1);
+    }
+
+    /* Show only icons, no text labels */
     .nav-pill {
-      padding: 6px;
-      gap: 0;
-      font-size: 0; /* hides text node */
+      padding: 4px 6px;
+      font-size: 0;
     }
+
     .nav-icon {
-      width: 16px;
-      height: 16px;
+      width: 13px;
+      height: 13px;
     }
+
+    .logo-img {
+      width: 20px;
+      height: 20px;
+    }
+
+    .icon-btn {
+      width: 28px;
+      height: 28px;
+    }
+
     .status-chip {
+      display: none;
+    }
+
+    .header-left {
+      gap: var(--sp-1);
+    }
+
+    .header-right {
       display: none;
     }
   }
