@@ -13,11 +13,32 @@ function getBasePath() {
 const BASE = getBasePath();
 
 async function request(endpoint, options = {}) {
+  const {
+    timeoutMs = 15000,
+    headers: customHeaders = {},
+    ...fetchOptions
+  } = options;
+
   const url = `${BASE}${endpoint}`;
-  const res = await fetch(url, {
-    headers: { 'Content-Type': 'application/json', ...options.headers },
-    ...options,
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  let res;
+  try {
+    res = await fetch(url, {
+      headers: { 'Content-Type': 'application/json', ...customHeaders },
+      signal: controller.signal,
+      ...fetchOptions,
+    });
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      throw new Error(`API timeout after ${timeoutMs}ms for ${endpoint}`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`API ${res.status}: ${body}`);
@@ -98,7 +119,9 @@ export async function getLifecycleEvents(limit = 100) {
 }
 
 export async function getNetworkDevices(scan = false) {
-  return request(`/api/network-devices${scan ? '?scan=true' : ''}`);
+  return request(`/api/network-devices${scan ? '?scan=true' : ''}`, {
+    timeoutMs: scan ? 30000 : 15000,
+  });
 }
 
 // ─── SSE stream (global singleton with robust reconnection) ─

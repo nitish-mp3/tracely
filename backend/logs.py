@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import gzip
 import os
+import stat
 import time
 from collections import deque
 from pathlib import Path
@@ -132,17 +133,68 @@ def snapshot_log_tail(
                 f.seek(start)
                 data = f.read()
             except (OSError, ValueError):
+                # Non-seekable streams (pipes/char devices) must be read in
+                # non-blocking mode, otherwise endpoints can hang indefinitely.
+                fd: int | None
+                try:
+                    fd = f.fileno()
+                except Exception:
+                    fd = None
+
+                mode = 0
+                if fd is not None:
+                    try:
+                        mode = os.fstat(fd).st_mode
+                    except OSError:
+                        mode = 0
+
                 chunks: deque[bytes] = deque()
                 total = 0
-                while True:
-                    chunk = f.read(64 * 1024)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    total += len(chunk)
-                    while total > max_bytes and chunks:
-                        removed = chunks.popleft()
-                        total -= len(removed)
+
+                is_stream = bool(
+                    mode
+                    and (
+                        stat.S_ISFIFO(mode)
+                        or stat.S_ISSOCK(mode)
+                        or stat.S_ISCHR(mode)
+                    )
+                )
+
+                if is_stream and fd is not None:
+                    try:
+                        os.set_blocking(fd, False)
+                    except (AttributeError, OSError):
+                        # Best effort; os.read below still guarded.
+                        pass
+
+                    # Read only currently available bytes.
+                    for _ in range(128):
+                        try:
+                            chunk = os.read(fd, 64 * 1024)
+                        except BlockingIOError:
+                            break
+                        except OSError:
+                            break
+
+                        if not chunk:
+                            break
+
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        while total > max_bytes and chunks:
+                            removed = chunks.popleft()
+                            total -= len(removed)
+                else:
+                    while True:
+                        chunk = f.read(64 * 1024)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        while total > max_bytes and chunks:
+                            removed = chunks.popleft()
+                            total -= len(removed)
+
                 data = b"".join(chunks)
 
         # Decode with error replacement for corrupted bytes

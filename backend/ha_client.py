@@ -118,6 +118,13 @@ class HAClient:
                 if resp.get("success"):
                     return resp.get("result")
                 return None
+            except aiohttp.WSServerHandshakeError as e:
+                logger.warning(
+                    "ha_client.ws_command_unavailable",
+                    command=command.get("type"),
+                    status=e.status,
+                )
+                return None
             except Exception:
                 logger.exception("ha_client.ws_command_error", command=command.get("type"))
                 return None
@@ -305,6 +312,8 @@ class HAClient:
                 await self._connect_and_listen()
             except asyncio.CancelledError:
                 break
+            except aiohttp.WSServerHandshakeError as e:
+                logger.warning("ha_client.connection_unavailable", status=e.status)
             except Exception:
                 logger.exception("ha_client.connection_error")
 
