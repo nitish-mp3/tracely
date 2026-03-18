@@ -44,6 +44,7 @@ from .normalizer import Normalizer
 from .purge import PurgeManager
 from .storage import Storage
 from .tree_builder import TreeBuilder
+from . import logs
 
 logger = structlog.get_logger(__name__)
 
@@ -1832,6 +1833,56 @@ async def api_health() -> HealthResponse:
     client = ha_client or HAClient(settings, on_event=_process_ha_event)
     _runtime_status["event_queue_depth"] = _event_queue.qsize()
     return await get_health(storage, client, runtime_status=_runtime_status)
+
+
+@app.get("/api/logs")
+async def api_logs(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
+    """
+    Expose HA core log diagnostic data.
+    
+    Returns:
+        {
+            "available": bool,
+            "size_bytes": int,
+            "line_count": int,
+            "error_count": int,
+            "warning_count": int,
+            "last_entry_ts": str,
+            "lines": [ {"timestamp": str, "level": str, "message": str}, ... ]
+        }
+    """
+    try:
+        summary = logs.get_log_summary(max_bytes=500_000)
+        
+        if not summary.get("available"):
+            return {
+                "available": False,
+                "error": summary.get("error", "Log file not accessible"),
+            }
+        
+        # Include parsed log lines
+        snapshot = summary.get("snapshot")
+        lines = (
+            logs.parse_log_lines(snapshot, encoded=True, limit=limit)
+            if snapshot
+            else []
+        )
+        
+        return {
+            "available": True,
+            "size_bytes": summary.get("size_bytes", 0),
+            "line_count": summary.get("line_count", 0),
+            "error_count": summary.get("error_count", 0),
+            "warning_count": summary.get("warning_count", 0),
+            "last_entry_ts": summary.get("last_entry_ts", ""),
+            "lines": lines,
+        }
+    except Exception as e:
+        logger.exception("api.logs_error", error=str(e))
+        return {
+            "available": False,
+            "error": str(e),
+        }
 
 
 @app.get("/metrics")

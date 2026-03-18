@@ -13,7 +13,8 @@ try:
 except Exception:  # pragma: no cover - fallback when psutil is unavailable
     psutil = None
 
-from .models import HealthResponse
+from .models import HealthResponse, LogInfo
+from . import logs
 
 if TYPE_CHECKING:
     from .ha_client import HAClient
@@ -68,6 +69,24 @@ async def get_health(
             last_ts / 1000, tz=timezone.utc,
         ).isoformat()
 
+    # Capture HA core log summary
+    log_summary = logs.get_log_summary(max_bytes=100_000)
+    ha_core_log = None
+    if log_summary.get("available"):
+        ha_core_log = LogInfo(
+            available=True,
+            size_bytes=log_summary.get("size_bytes", 0),
+            line_count=log_summary.get("line_count", 0),
+            error_count=log_summary.get("error_count", 0),
+            warning_count=log_summary.get("warning_count", 0),
+            last_entry_ts=log_summary.get("last_entry_ts", ""),
+        )
+    else:
+        ha_core_log = LogInfo(
+            available=False,
+            error=log_summary.get("error"),
+        )
+
     return HealthResponse(
         status="ok",
         db_size_bytes=db_size,
@@ -82,6 +101,7 @@ async def get_health(
         last_async_block_ms=round(float(runtime_status.get("last_async_block_ms", 0.0)), 2),
         incidents_total=incidents_total,
         ha_restart_count=int(runtime_status.get("ha_restart_count", 0)),
+        ha_core_log=ha_core_log,
     )
 
 

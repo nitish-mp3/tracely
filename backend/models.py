@@ -90,6 +90,17 @@ class TreeResponse(BaseModel):
     stats: TreeStats | None = None
 
 
+class LogInfo(BaseModel):
+    """Log file diagnostic info."""
+    available: bool
+    size_bytes: int = 0
+    line_count: int = 0
+    error_count: int = 0
+    warning_count: int = 0
+    last_entry_ts: str = ""
+    error: str | None = None
+
+
 class HealthResponse(BaseModel):
     status: str
     db_size_bytes: int
@@ -104,6 +115,7 @@ class HealthResponse(BaseModel):
     last_async_block_ms: float = 0.0
     incidents_total: int = 0
     ha_restart_count: int = 0
+    ha_core_log: LogInfo | None = None
 
 
 class IncidentResponse(BaseModel):

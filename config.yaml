@@ -1,5 +1,5 @@
 name: "Tracely"
-version: "3.1.8"
+version: "3.1.9"
 slug: "tracely"
 description: "Offline causal event tracing for Home Assistant — see human-readable, searchable, interactive causal trees and timelines of everything that happened."
 url: "https://github.com/nitish-mp3/tracely"
@@ -28,12 +28,14 @@ options:
   redact_pii: true
   ha_token: ""
   backfill_days: 7
+  capture_core_logs: true
 schema:
   purge_keep_days: int(1,365)
   log_level: list(debug|info|warning|error)
   redact_pii: bool
   ha_token: str?
   backfill_days: int(0,30)
+  capture_core_logs: bool
 ingress: true
 ingress_port: 8765
 panel_icon: "mdi:shield-lock"
