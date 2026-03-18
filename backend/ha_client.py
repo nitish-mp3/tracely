@@ -48,6 +48,8 @@ class HAClient:
         self._task: asyncio.Task[None] | None = None
         # Tracks the subscription ID for knx/subscribe_telegrams
         self._knx_sub_id: int | None = None
+        # Cache error_log availability (None = unknown, True = available, False = unavailable/404)
+        self._error_log_available: bool | None = None
 
     @property
     def connected(self) -> bool:
@@ -96,7 +98,9 @@ class HAClient:
             return []
 
     async def fetch_error_log(self, max_bytes: int = 500_000) -> str | None:
-        """Fetch HA error log via REST API as fallback when file access fails."""
+        if self._error_log_available is False:
+            return None
+
         http_url = (
             self._ws_url
             .replace("ws://", "http://")
@@ -110,15 +114,21 @@ class HAClient:
         try:
             timeout = aiohttp.ClientTimeout(total=10)
             async with self._session.get(http_url, headers=headers, timeout=timeout) as resp:
-                if resp.status != 200:
-                    logger.warning("ha_client.fetch_error_log_failed", status=resp.status)
+                if resp.status == 404:
+                    # Endpoint not available on this HA instance; cache and stop retrying.
+                    self._error_log_available = False
+                    logger.debug("ha_client.error_log_not_available")
                     return None
+                if resp.status != 200:
+                    logger.debug("ha_client.fetch_error_log_failed", status=resp.status)
+                    return None
+                self._error_log_available = True
                 text = await resp.text()
                 if len(text) > max_bytes:
                     text = text[-max_bytes:]
                 return text
         except Exception:
-            logger.exception("ha_client.fetch_error_log_error")
+            logger.debug("ha_client.fetch_error_log_error")
             return None
 
     async def _ws_command(self, command: dict[str, Any]) -> dict[str, Any] | None:
