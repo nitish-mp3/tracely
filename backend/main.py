@@ -863,22 +863,40 @@ async def _handle_ha_lifecycle_event(record: EventRecord) -> None:
     if record.event_type not in {"homeassistant_start", "homeassistant_stop"}:
         return
 
+    logger.info(
+        "ha_lifecycle.detected",
+        event_type=record.event_type,
+        timestamp=record.timestamp,
+    )
+
     if record.event_type == "homeassistant_start":
         _runtime_status["ha_restart_count"] = int(_runtime_status.get("ha_restart_count", 0)) + 1
-    await _record_incident(
-        incident_type=record.event_type,
-        severity="info",
-        source="ha_ws",
-        message=f"Home Assistant lifecycle event: {record.event_type}",
-        details={
-            "event_id": record.id,
-            "event_name": record.name,
-            "timestamp": record.timestamp,
-        },
-        related_event_id=record.id,
-        loop_block_ms=float(_runtime_status.get("last_async_block_ms", 0.0)),
-        emit_timeline_event=False,
-    )
+
+    try:
+        await _record_incident(
+            incident_type="ha_lifecycle",
+            severity="info",
+            source=record.event_type,
+            message=f"HA {'started' if record.event_type == 'homeassistant_start' else 'stopped'}",
+            details={
+                "ha_event_type": record.event_type,
+                "event_id": record.id,
+                "event_name": record.name,
+            },
+            related_event_id=record.id,
+            loop_block_ms=float(_runtime_status.get("last_async_block_ms", 0.0)),
+            emit_timeline_event=True,  # CHANGED: Always emit to timeline for visibility
+        )
+        logger.info(
+            "ha_lifecycle.recorded",
+            event_type=record.event_type,
+        )
+    except Exception as e:
+        logger.exception(
+            "ha_lifecycle.record_error",
+            event_type=record.event_type,
+            error=str(e),
+        )
 
     if record.event_type == "homeassistant_start":
         asyncio.create_task(

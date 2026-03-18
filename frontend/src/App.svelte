@@ -5,6 +5,7 @@
   import Search from './views/Search.svelte';
   import Stats from './views/Stats.svelte';
   import SystemHealth from './views/SystemHealth.svelte';
+  import LifecycleMonitor from './views/LifecycleMonitor.svelte';
   import KnxMonitor from './views/KnxMonitor.svelte';
   import ZigbeeMonitor from './views/ZigbeeMonitor.svelte';
   import Toast from './components/Toast.svelte';
@@ -126,6 +127,16 @@
           Health
         </button>
         <button
+          class="nav-pill lifecycle-pill"
+          class:active={$currentView === 'lifecycle'}
+          on:click={() => handleNav('lifecycle')}
+        >
+          <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <path d="M2 8h4M10 8h4M8 2v4M8 10v4M3 3l2.828 2.828M10.172 10.172L13 13" />
+          </svg>
+          Lifecycle
+        </button>
+        <button
           class="nav-pill knx-pill"
           class:active={$currentView === 'knx'}
           on:click={() => handleNav('knx')}
@@ -206,6 +217,8 @@
       <Stats />
     {:else if $currentView === 'health'}
       <SystemHealth />
+    {:else if $currentView === 'lifecycle'}
+      <LifecycleMonitor />
     {:else if $currentView === 'knx'}
       <KnxMonitor />
     {:else if $currentView === 'zigbee'}
@@ -308,6 +321,9 @@
   }
   .nav-pill.knx-pill.active {
     color: #818cf8;
+  }
+  .nav-pill.lifecycle-pill.active {
+    color: #f59e0b;
   }
   .nav-pill.zigbee-pill.active {
     color: #22c55e;
