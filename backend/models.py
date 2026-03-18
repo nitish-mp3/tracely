@@ -97,6 +97,29 @@ class HealthResponse(BaseModel):
     events_count: int
     ws_connected: bool
     uptime_seconds: float
+    cpu_percent: float = 0.0
+    memory_percent: float = 0.0
+    memory_rss_mb: float = 0.0
+    event_queue_depth: int = 0
+    last_async_block_ms: float = 0.0
+    incidents_total: int = 0
+    ha_restart_count: int = 0
+
+
+class IncidentResponse(BaseModel):
+    id: str
+    incident_type: str
+    severity: str
+    source: str
+    message: str
+    details: dict
+    related_event_id: str | None = None
+    cpu_percent: float | None = None
+    memory_percent: float | None = None
+    memory_rss_mb: float | None = None
+    event_queue_depth: int | None = None
+    loop_block_ms: float | None = None
+    timestamp: str
 
 
 class BookmarkRequest(BaseModel):

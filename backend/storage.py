@@ -65,6 +65,25 @@ CREATE TABLE IF NOT EXISTS config (
   value TEXT
 );
 
+CREATE TABLE IF NOT EXISTS incidents (
+    id               TEXT    PRIMARY KEY,
+    incident_type    TEXT    NOT NULL,
+    severity         TEXT    NOT NULL,
+    source           TEXT    NOT NULL,
+    message          TEXT    NOT NULL,
+    details          TEXT    NOT NULL,
+    related_event_id TEXT,
+    cpu_percent      REAL,
+    memory_percent   REAL,
+    memory_rss_mb    REAL,
+    event_queue_depth INTEGER,
+    loop_block_ms    REAL,
+    timestamp        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_time ON incidents(timestamp);
+CREATE INDEX IF NOT EXISTS idx_incidents_type ON incidents(incident_type);
+CREATE INDEX IF NOT EXISTS idx_incidents_severity ON incidents(severity);
+
 CREATE TABLE IF NOT EXISTS knx_telegrams (
   id              TEXT    PRIMARY KEY,
   timestamp       INTEGER NOT NULL,
@@ -542,6 +561,95 @@ class Storage:
             return os.path.getsize(self._db_path)
         except OSError:
             return 0
+
+    # ─── Incident log ────────────────────────────────────
+
+    async def insert_incident(
+        self,
+        *,
+        incident_id: str,
+        incident_type: str,
+        severity: str,
+        source: str,
+        message: str,
+        details: str,
+        related_event_id: str | None,
+        cpu_percent: float | None,
+        memory_percent: float | None,
+        memory_rss_mb: float | None,
+        event_queue_depth: int | None,
+        loop_block_ms: float | None,
+        timestamp: int,
+    ) -> None:
+        assert self._db is not None
+        await self._db.execute(
+            """INSERT OR IGNORE INTO incidents
+               (id, incident_type, severity, source, message, details,
+                related_event_id, cpu_percent, memory_percent, memory_rss_mb,
+                event_queue_depth, loop_block_ms, timestamp)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                incident_id,
+                incident_type,
+                severity,
+                source,
+                message,
+                details,
+                related_event_id,
+                cpu_percent,
+                memory_percent,
+                memory_rss_mb,
+                event_queue_depth,
+                loop_block_ms,
+                timestamp,
+            ),
+        )
+        await self._db.commit()
+
+    async def get_incidents(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        incident_type: str | None = None,
+        severity: str | None = None,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        assert self._db is not None
+        conditions: list[str] = []
+        params: list[Any] = []
+        if incident_type:
+            conditions.append("incident_type = ?")
+            params.append(incident_type)
+        if severity:
+            conditions.append("severity = ?")
+            params.append(severity)
+        if from_ts is not None:
+            conditions.append("timestamp >= ?")
+            params.append(from_ts)
+        if to_ts is not None:
+            conditions.append("timestamp <= ?")
+            params.append(to_ts)
+
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        count_rows = await self._db.execute_fetchall(
+            f"SELECT COUNT(*) as cnt FROM incidents{where}",
+            params,
+        )
+        total = count_rows[0]["cnt"] if count_rows else 0
+
+        rows = await self._db.execute_fetchall(
+            f"SELECT * FROM incidents{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+        return [dict(r) for r in rows], total
+
+    async def get_incident_count(self) -> int:
+        assert self._db is not None
+        rows = await self._db.execute_fetchall("SELECT COUNT(*) as cnt FROM incidents")
+        return rows[0]["cnt"] if rows else 0
 
     async def get_activity_stats(self) -> dict[str, Any]:
         """Comprehensive activity statistics for the stats dashboard."""

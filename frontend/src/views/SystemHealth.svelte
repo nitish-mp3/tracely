@@ -102,6 +102,11 @@
     return `${mins}m`;
   }
 
+  function formatPct(value) {
+    if (value === null || value === undefined) return '0.00%';
+    return `${Number(value).toFixed(2)}%`;
+  }
+
   function handleEntityClick(entityId) {
     $selectedEntityTag = entityId;
   }
@@ -138,6 +143,8 @@
   $: hiddenScanCount = Math.max(0, scanDevices.length - SCAN_PREVIEW);
   $: isScanPending = !scanReady && !scanLoading && !scanError;
   $: scanSubnets = scanData?.subnets || [];
+  $: recentIncidents = data?.recent_incidents || [];
+  $: criticalIncidents = recentIncidents.filter((i) => i.severity === 'critical').length;
 
   // Collapsible section state
   let sectionOpen = {
@@ -147,6 +154,7 @@
     domains: true,
     unavailable: false,  // closed by default — can be 1000+ items
     offline: true,
+    incidents: true,
   };
   function toggleSection(key) { sectionOpen[key] = !sectionOpen[key]; sectionOpen = sectionOpen; }
 </script>
@@ -256,6 +264,36 @@
         <div class="kpi-body">
           <span class="kpi-value">{sortedAreas.length}</span>
           <span class="kpi-label">Areas</span>
+        </div>
+      </div>
+
+      <div class="kpi-card" class:kpi-warn={(data.cpu_percent || 0) >= 90}>
+        <div class="kpi-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16v16H4z" /><path d="M9 9h6v6H9z" /><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3" /></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-value">{formatPct(data.cpu_percent)}</span>
+          <span class="kpi-label">CPU Usage</span>
+        </div>
+      </div>
+
+      <div class="kpi-card" class:kpi-warn={(data.memory_percent || 0) >= 90}>
+        <div class="kpi-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="7" width="20" height="10" rx="2" /><path d="M6 11h2M10 11h2M14 11h2" /></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-value">{formatPct(data.memory_percent)}</span>
+          <span class="kpi-label">Memory Usage</span>
+        </div>
+      </div>
+
+      <div class="kpi-card" class:kpi-warn={criticalIncidents > 0}>
+        <div class="kpi-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><path d="M12 9v4M12 17h.01" /></svg>
+        </div>
+        <div class="kpi-body">
+          <span class="kpi-value">{(data.incidents_total || 0).toLocaleString()}</span>
+          <span class="kpi-label">Incidents</span>
         </div>
       </div>
     </div>
@@ -555,6 +593,47 @@
           </div>
         {:else}
           <p class="empty-note">No offline periods recorded.</p>
+        {/if}
+      {/if}
+    </div>
+
+    <!-- Runtime / Crash Forensics -->
+    <div class="section-card" class:warn-card={criticalIncidents > 0}>
+      <button class="section-header" on:click={() => toggleSection('incidents')} aria-expanded={sectionOpen.incidents}>
+        <h3 class="section-title">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 1l7 13H1L8 1z" /><path d="M8 6v3" /><path d="M8 11h.01" /></svg>
+          Runtime Incidents
+          {#if recentIncidents.length > 0}
+            <span class="section-count" class:warn={criticalIncidents > 0}>{recentIncidents.length}</span>
+          {/if}
+        </h3>
+        <svg class="section-chevron" class:open={sectionOpen.incidents} viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6l4 4 4-4"/></svg>
+      </button>
+      {#if sectionOpen.incidents}
+        {#if recentIncidents.length > 0}
+          <div class="incident-list">
+            {#each recentIncidents as incident}
+              <div class="incident-row" class:incident-critical={incident.severity === 'critical'} class:incident-warning={incident.severity === 'warning'}>
+                <div class="incident-main">
+                  <div class="incident-header">
+                    <span class="incident-type">{incident.incident_type}</span>
+                    <span class="incident-severity">{incident.severity}</span>
+                    <span class="incident-time">{formatTime(incident.timestamp)}</span>
+                  </div>
+                  <div class="incident-message">{incident.message}</div>
+                </div>
+                <div class="incident-metrics">
+                  <span>CPU {formatPct(incident.cpu_percent)}</span>
+                  <span>MEM {formatPct(incident.memory_percent)}</span>
+                  <span>RSS {Number(incident.memory_rss_mb || 0).toFixed(2)} MB</span>
+                  <span>Queue {incident.event_queue_depth || 0}</span>
+                  <span>Loop {Number(incident.loop_block_ms || 0).toFixed(2)} ms</span>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="empty-note">No runtime incidents recorded.</p>
         {/if}
       {/if}
     </div>
@@ -951,6 +1030,87 @@
     color: var(--color-text-secondary); font-family: var(--font-mono);
   }
   .offline-duration.duration-ongoing { color: var(--color-error, #ef4444); }
+
+  /* Runtime incidents */
+  .incident-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    padding: 0 var(--sp-4) var(--sp-3);
+  }
+  .incident-row {
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-hover);
+    padding: var(--sp-2) var(--sp-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+  }
+  .incident-row.incident-warning {
+    border-color: rgba(245, 158, 11, 0.35);
+  }
+  .incident-row.incident-critical {
+    border-color: rgba(239, 68, 68, 0.45);
+  }
+  .incident-main {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .incident-header {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-wrap: wrap;
+  }
+  .incident-type {
+    font-size: var(--text-xs);
+    font-weight: 700;
+    color: var(--color-text);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .incident-severity {
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    border-radius: var(--radius-full);
+    padding: 1px 8px;
+    color: var(--color-text-muted);
+    background: var(--color-surface);
+  }
+  .incident-critical .incident-severity {
+    color: var(--color-error, #ef4444);
+    background: rgba(239, 68, 68, 0.1);
+  }
+  .incident-warning .incident-severity {
+    color: var(--color-warning, #f59e0b);
+    background: rgba(245, 158, 11, 0.1);
+  }
+  .incident-time {
+    margin-left: auto;
+    font-size: var(--text-2xs);
+    color: var(--color-text-muted);
+    font-family: var(--font-mono);
+  }
+  .incident-message {
+    font-size: var(--text-sm);
+    color: var(--color-text);
+  }
+  .incident-metrics {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .incident-metrics span {
+    font-size: var(--text-2xs);
+    color: var(--color-text-secondary);
+    font-family: var(--font-mono);
+    padding: 2px 6px;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+  }
 
   .empty-note { color: var(--color-text-muted); font-size: var(--text-sm); padding: 0 var(--sp-4) var(--sp-3); }
 

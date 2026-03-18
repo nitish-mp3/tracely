@@ -158,3 +158,49 @@ async def test_stats(db: Storage) -> None:
     assert await db.get_event_count() == 1
     assert await db.get_last_event_ts() is not None
     assert await db.get_db_size() > 0
+
+
+@pytest.mark.asyncio
+async def test_incident_log_storage_and_filters(db: Storage) -> None:
+    now = int(time.time() * 1000)
+    await db.insert_incident(
+        incident_id="inc1",
+        incident_type="cpu_spike",
+        severity="warning",
+        source="runtime_monitor",
+        message="CPU spike detected",
+        details=json.dumps({"cpu_percent": 96.5}),
+        related_event_id=None,
+        cpu_percent=96.5,
+        memory_percent=22.3,
+        memory_rss_mb=112.4,
+        event_queue_depth=4,
+        loop_block_ms=10.0,
+        timestamp=now,
+    )
+    await db.insert_incident(
+        incident_id="inc2",
+        incident_type="memory_spike",
+        severity="critical",
+        source="runtime_monitor",
+        message="Memory pressure detected",
+        details=json.dumps({"memory_percent": 93.1}),
+        related_event_id="ev42",
+        cpu_percent=11.2,
+        memory_percent=93.1,
+        memory_rss_mb=512.8,
+        event_queue_depth=17,
+        loop_block_ms=41.5,
+        timestamp=now + 10,
+    )
+
+    rows, total = await db.get_incidents(limit=10)
+    assert total == 2
+    assert len(rows) == 2
+    assert rows[0]["id"] == "inc2"
+
+    warning_rows, warning_total = await db.get_incidents(severity="warning")
+    assert warning_total == 1
+    assert warning_rows[0]["incident_type"] == "cpu_spike"
+
+    assert await db.get_incident_count() == 2

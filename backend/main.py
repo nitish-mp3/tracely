@@ -27,12 +27,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from .config import Settings
 from .entity_map import EntityMap
 from .ha_client import HAClient
-from .health import get_health, get_metrics_text
+from .health import get_health, get_metrics_text, get_runtime_metrics
 from .models import (
     BookmarkRequest,
     EventRecord,
     EventResponse,
     HealthResponse,
+    IncidentResponse,
     KnxFlowResponse,
     KnxGroupAddressResponse,
     KnxTelegramResponse,
@@ -69,6 +70,17 @@ _sensor_counts: dict[str, list[float]] = defaultdict(list)
 # Event processing queue (back-pressure at 10 000 items)
 _event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=10_000)
 _processor_task: asyncio.Task[None] | None = None
+_runtime_monitor_task: asyncio.Task[None] | None = None
+_entity_reload_lock = asyncio.Lock()
+_incident_last_seen: dict[str, float] = {}
+_runtime_status: dict[str, Any] = {
+    "cpu_percent": 0.0,
+    "memory_percent": 0.0,
+    "memory_rss_mb": 0.0,
+    "event_queue_depth": 0,
+    "last_async_block_ms": 0.0,
+    "ha_restart_count": 0,
+}
 
 # KNX diagnostics — track recent raw events for debugging
 _knx_diag: dict[str, Any] = {
@@ -324,6 +336,12 @@ async def _event_processor() -> None:
             for rec in batch:
                 await tree_builder.link(rec)
                 _fan_out_sse(rec)
+
+                if rec.event_type in {"homeassistant_start", "homeassistant_stop"}:
+                    asyncio.create_task(
+                        _handle_ha_lifecycle_event(rec),
+                        name=f"ha-lifecycle-{rec.event_type}",
+                    )
 
                 # Reverse-link: if this is a state_changed for a KNX entity,
                 # find the nearest KNX telegram on any of its GAs and record
@@ -681,12 +699,283 @@ def _fan_out_sse(record: EventRecord) -> None:
     sse_clients.difference_update(dead)
 
 
+def _incident_to_response(row: dict[str, Any]) -> IncidentResponse:
+    ts = row.get("timestamp", 0)
+    iso = (
+        datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat()
+        if ts
+        else ""
+    )
+    details_raw = row.get("details", "{}")
+    try:
+        details = json.loads(details_raw)
+    except (json.JSONDecodeError, TypeError):
+        details = {"raw": str(details_raw)}
+    return IncidentResponse(
+        id=row["id"],
+        incident_type=row.get("incident_type", ""),
+        severity=row.get("severity", "info"),
+        source=row.get("source", "runtime_monitor"),
+        message=row.get("message", ""),
+        details=details,
+        related_event_id=row.get("related_event_id"),
+        cpu_percent=row.get("cpu_percent"),
+        memory_percent=row.get("memory_percent"),
+        memory_rss_mb=row.get("memory_rss_mb"),
+        event_queue_depth=row.get("event_queue_depth"),
+        loop_block_ms=row.get("loop_block_ms"),
+        timestamp=iso,
+    )
+
+
+async def _record_incident(
+    *,
+    incident_type: str,
+    severity: str,
+    source: str,
+    message: str,
+    details: dict[str, Any],
+    related_event_id: str | None = None,
+    loop_block_ms: float | None = None,
+    emit_timeline_event: bool = False,
+) -> None:
+    """Persist an incident with runtime context and optional timeline emission."""
+    cooldown_key = f"{incident_type}:{severity}:{source}"
+    now_s = time.time()
+    last_seen = _incident_last_seen.get(cooldown_key, 0.0)
+    if now_s - last_seen < settings.incident_cooldown_seconds:
+        return
+    _incident_last_seen[cooldown_key] = now_s
+
+    timestamp_ms = _epoch_ms()
+    runtime = get_runtime_metrics()
+    queue_depth = _event_queue.qsize()
+    incident_id = TreeBuilder.generate_event_id(
+        f"incident:{incident_type}:{source}:{timestamp_ms}:{message}",
+    )
+
+    merged_details = {
+        **details,
+        "thresholds": {
+            "cpu_spike_threshold_percent": settings.cpu_spike_threshold_percent,
+            "memory_spike_threshold_percent": settings.memory_spike_threshold_percent,
+            "async_block_threshold_ms": settings.async_block_threshold_ms,
+            "queue_spike_threshold": settings.queue_spike_threshold,
+        },
+    }
+
+    await storage.insert_incident(
+        incident_id=incident_id,
+        incident_type=incident_type,
+        severity=severity,
+        source=source,
+        message=message,
+        details=json.dumps(merged_details, default=str),
+        related_event_id=related_event_id,
+        cpu_percent=runtime["cpu_percent"],
+        memory_percent=runtime["memory_percent"],
+        memory_rss_mb=runtime["memory_rss_mb"],
+        event_queue_depth=queue_depth,
+        loop_block_ms=loop_block_ms,
+        timestamp=timestamp_ms,
+    )
+
+    if severity in {"warning", "critical"}:
+        logger.warning(
+            "incident.recorded",
+            incident_type=incident_type,
+            message=message,
+            cpu_percent=runtime["cpu_percent"],
+            memory_percent=runtime["memory_percent"],
+            memory_rss_mb=runtime["memory_rss_mb"],
+            queue_depth=queue_depth,
+            loop_block_ms=loop_block_ms,
+        )
+    else:
+        logger.info(
+            "incident.recorded",
+            incident_type=incident_type,
+            message=message,
+            cpu_percent=runtime["cpu_percent"],
+            memory_percent=runtime["memory_percent"],
+            memory_rss_mb=runtime["memory_rss_mb"],
+            queue_depth=queue_depth,
+            loop_block_ms=loop_block_ms,
+        )
+
+    if emit_timeline_event:
+        incident_event = EventRecord(
+            id=f"incident_{incident_id}",
+            parent_id=None,
+            event_type="system_incident",
+            domain="system",
+            service=incident_type,
+            entity_id="sensor.tracely_runtime",
+            payload=json.dumps(
+                {
+                    "incident_id": incident_id,
+                    "incident_type": incident_type,
+                    "severity": severity,
+                    "message": message,
+                    "details": merged_details,
+                },
+                default=str,
+            ),
+            name=message,
+            integration="tracely",
+            area="system",
+            timestamp=timestamp_ms,
+            user_id=None,
+            important=1 if severity == "critical" else 0,
+            confidence="propagated",
+            generated_root=1,
+        )
+        await storage.insert_event(incident_event)
+        _fan_out_sse(incident_event)
+
+
+async def _refresh_entity_registry(reason: str) -> None:
+    """Refresh entities and registries after HA restart/start events."""
+    if not ha_client:
+        return
+    async with _entity_reload_lock:
+        try:
+            entity_map.clear()
+            states = await ha_client.fetch_states()
+            entity_map.load_states(states)
+            areas = await ha_client.fetch_area_registry()
+            entity_map.load_areas(areas)
+            devices = await ha_client.fetch_device_registry()
+            entity_map.load_device_registry(devices)
+            entries = await ha_client.fetch_entity_registry()
+            entity_map.load_entity_registry(entries)
+            logger.info(
+                "entity_map.refreshed",
+                reason=reason,
+                entity_count=entity_map.count,
+            )
+        except Exception:
+            logger.exception("entity_map.refresh_failed", reason=reason)
+
+
+async def _handle_ha_lifecycle_event(record: EventRecord) -> None:
+    """Track HA start/stop as explicit incidents for forensic debugging."""
+    if record.event_type not in {"homeassistant_start", "homeassistant_stop"}:
+        return
+
+    if record.event_type == "homeassistant_start":
+        _runtime_status["ha_restart_count"] = int(_runtime_status.get("ha_restart_count", 0)) + 1
+    await _record_incident(
+        incident_type=record.event_type,
+        severity="info",
+        source="ha_ws",
+        message=f"Home Assistant lifecycle event: {record.event_type}",
+        details={
+            "event_id": record.id,
+            "event_name": record.name,
+            "timestamp": record.timestamp,
+        },
+        related_event_id=record.id,
+        loop_block_ms=float(_runtime_status.get("last_async_block_ms", 0.0)),
+        emit_timeline_event=False,
+    )
+
+    if record.event_type == "homeassistant_start":
+        asyncio.create_task(
+            _refresh_entity_registry("homeassistant_start"),
+            name="refresh-entities-on-ha-start",
+        )
+
+
+async def _runtime_monitor() -> None:
+    """Monitor runtime pressure and async-loop blockage for incident logging."""
+    interval_s = max(settings.monitor_interval_seconds, 1)
+    last_tick = time.perf_counter()
+
+    while True:
+        try:
+            await asyncio.sleep(interval_s)
+            now = time.perf_counter()
+            loop_block_ms = max(0.0, (now - last_tick - interval_s) * 1000.0)
+            last_tick = now
+
+            runtime = get_runtime_metrics()
+            queue_depth = _event_queue.qsize()
+            _runtime_status.update(
+                {
+                    "cpu_percent": runtime["cpu_percent"],
+                    "memory_percent": runtime["memory_percent"],
+                    "memory_rss_mb": runtime["memory_rss_mb"],
+                    "event_queue_depth": queue_depth,
+                    "last_async_block_ms": loop_block_ms,
+                },
+            )
+
+            if loop_block_ms >= settings.async_block_threshold_ms:
+                await _record_incident(
+                    incident_type="async_blockage",
+                    severity="warning",
+                    source="runtime_monitor",
+                    message=(
+                        "Async event loop blockage detected "
+                        f"({loop_block_ms:.1f} ms)"
+                    ),
+                    details={"loop_block_ms": round(loop_block_ms, 2)},
+                    loop_block_ms=loop_block_ms,
+                    emit_timeline_event=True,
+                )
+
+            if runtime["cpu_percent"] >= settings.cpu_spike_threshold_percent:
+                await _record_incident(
+                    incident_type="cpu_spike",
+                    severity="warning",
+                    source="runtime_monitor",
+                    message=(
+                        "CPU usage spike detected "
+                        f"({runtime['cpu_percent']:.2f}%)"
+                    ),
+                    details={"cpu_percent": round(runtime["cpu_percent"], 2)},
+                    emit_timeline_event=True,
+                )
+
+            if runtime["memory_percent"] >= settings.memory_spike_threshold_percent:
+                await _record_incident(
+                    incident_type="memory_spike",
+                    severity="critical",
+                    source="runtime_monitor",
+                    message=(
+                        "Memory pressure detected "
+                        f"({runtime['memory_percent']:.2f}% / {runtime['memory_rss_mb']:.2f} MB RSS)"
+                    ),
+                    details={
+                        "memory_percent": round(runtime["memory_percent"], 2),
+                        "memory_rss_mb": round(runtime["memory_rss_mb"], 2),
+                    },
+                    emit_timeline_event=True,
+                )
+
+            if queue_depth >= settings.queue_spike_threshold:
+                await _record_incident(
+                    incident_type="event_queue_spike",
+                    severity="warning",
+                    source="runtime_monitor",
+                    message=f"Event queue depth spike detected ({queue_depth})",
+                    details={"event_queue_depth": queue_depth},
+                    emit_timeline_event=True,
+                )
+
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.exception("runtime_monitor.error")
+
+
 # ─── Lifespan ────────────────────────────────────────────
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
-    global ha_client, _processor_task
+    global ha_client, _processor_task, _runtime_monitor_task
 
     # Logging
     log_level = getattr(logging, settings.log_level.upper(), logging.INFO)
@@ -700,6 +989,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Event processor
     _processor_task = asyncio.create_task(_event_processor())
+    _runtime_monitor_task = asyncio.create_task(_runtime_monitor())
 
     # HA client
     ha_client = HAClient(settings, on_event=_process_ha_event)
@@ -746,6 +1036,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     await ha_client.stop()
+    if _runtime_monitor_task:
+        _runtime_monitor_task.cancel()
+        try:
+            await _runtime_monitor_task
+        except asyncio.CancelledError:
+            pass
     if _processor_task:
         _processor_task.cancel()
         try:
@@ -1408,6 +1704,17 @@ async def api_system_health() -> dict[str, Any]:
     except Exception:
         pass
 
+    recent_incidents: list[dict[str, Any]] = []
+    incidents_total = 0
+    try:
+        incident_rows, incidents_total = await storage.get_incidents(limit=20)
+        recent_incidents = [
+            _incident_to_response(row).model_dump()
+            for row in incident_rows
+        ]
+    except Exception:
+        logger.exception("api.system.incidents_failed")
+
     # DB stats
     db_size = 0
     event_count = 0
@@ -1419,6 +1726,15 @@ async def api_system_health() -> dict[str, Any]:
 
     ws_connected = ha_client.connected if ha_client else False
     uptime_s = int(time.time() - _start_time) if _start_time else 0
+    runtime = get_runtime_metrics()
+    _runtime_status.update(
+        {
+            "cpu_percent": runtime["cpu_percent"],
+            "memory_percent": runtime["memory_percent"],
+            "memory_rss_mb": runtime["memory_rss_mb"],
+            "event_queue_depth": _event_queue.qsize(),
+        },
+    )
 
     return {
         "ws_connected": ws_connected,
@@ -1430,24 +1746,73 @@ async def api_system_health() -> dict[str, Any]:
         "area_counts": area_counts,
         "network_info": network_info,
         "offline_periods": offline_periods[:20],
+        "recent_incidents": recent_incidents,
+        "incidents_total": incidents_total,
         "db_size_bytes": db_size,
         "events_count": event_count,
         "uptime_seconds": uptime_s,
+        "cpu_percent": round(float(_runtime_status.get("cpu_percent", 0.0)), 2),
+        "memory_percent": round(float(_runtime_status.get("memory_percent", 0.0)), 2),
+        "memory_rss_mb": round(float(_runtime_status.get("memory_rss_mb", 0.0)), 2),
+        "event_queue_depth": int(_runtime_status.get("event_queue_depth", 0)),
+        "last_async_block_ms": round(float(_runtime_status.get("last_async_block_ms", 0.0)), 2),
+        "ha_restart_count": int(_runtime_status.get("ha_restart_count", 0)),
+    }
+
+
+@app.get("/api/incidents")
+async def api_incidents(
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=500),
+    incident_type: str | None = Query(None),
+    severity: str | None = Query(None),
+) -> dict[str, Any]:
+    from_str = request.query_params.get("from")
+    to_str = request.query_params.get("to")
+    from_ts = _parse_timestamp(from_str)
+    to_ts = _parse_timestamp(to_str)
+    if from_ts is not None and to_ts is None:
+        to_ts = _epoch_ms()
+
+    offset = (page - 1) * limit
+    rows, total = await storage.get_incidents(
+        limit=limit,
+        offset=offset,
+        incident_type=incident_type,
+        severity=severity,
+        from_ts=from_ts,
+        to_ts=to_ts,
+    )
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "items": [_incident_to_response(row).model_dump() for row in rows],
     }
 
 
 @app.get("/health", response_model=HealthResponse)
 async def api_health() -> HealthResponse:
     client = ha_client or HAClient(settings, on_event=_process_ha_event)
-    return await get_health(storage, client)
+    _runtime_status["event_queue_depth"] = _event_queue.qsize()
+    return await get_health(storage, client, runtime_status=_runtime_status)
 
 
 @app.get("/metrics")
 async def api_metrics() -> Response:
     event_count = await storage.get_event_count()
+    incidents_total = await storage.get_incident_count()
     db_size = await storage.get_db_size()
     ws_connected = ha_client.connected if ha_client else False
-    text = get_metrics_text(event_count, db_size, ws_connected)
+    _runtime_status["event_queue_depth"] = _event_queue.qsize()
+    text = get_metrics_text(
+        event_count,
+        db_size,
+        ws_connected,
+        runtime_status=_runtime_status,
+        incidents_total=incidents_total,
+    )
     return Response(content=text, media_type="text/plain")
 
 

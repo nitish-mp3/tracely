@@ -31,6 +31,12 @@ class EntityMap:
         self._areas: dict[str, str] = {}  # area_id → area_name
         self._device_map: dict[str, dict] = {}
 
+    def clear(self) -> None:
+        """Clear all cached entities and registries before a full refresh."""
+        self._entities.clear()
+        self._areas.clear()
+        self._device_map.clear()
+
     def resolve(self, entity_id: str | None) -> EntityInfo | None:
         if not entity_id:
             return None

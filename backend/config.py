@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # Historical backfill on startup (0 = disabled, >0 = days to backfill)
     backfill_days: int = 7
 
+    # Runtime monitoring and incident thresholds
+    monitor_interval_seconds: int = 5
+    incident_cooldown_seconds: int = 30
+    cpu_spike_threshold_percent: float = 90.0
+    memory_spike_threshold_percent: float = 90.0
+    async_block_threshold_ms: float = 250.0
+    queue_spike_threshold: int = 8000
+
     # Rate limiting
     rate_limit_requests: int = 100
     rate_limit_window_seconds: int = 60
