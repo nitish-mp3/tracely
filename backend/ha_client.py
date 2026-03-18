@@ -352,13 +352,14 @@ class HAClient:
         # Subscribe to event types
         for event_type in HA_EVENT_TYPES:
             self._msg_id += 1
+            subscribe_id = self._msg_id
             await self._ws.send_json({
-                "id": self._msg_id,
+                "id": subscribe_id,
                 "type": "subscribe_events",
                 "event_type": event_type,
             })
-            resp = await self._ws.receive_json()
-            if not resp.get("success", False):
+            resp = await self._await_result(subscribe_id)
+            if not resp or not resp.get("success", False):
                 logger.warning(
                     "ha_client.subscribe_failed",
                     event_type=event_type,
@@ -375,8 +376,8 @@ class HAClient:
             "id": self._knx_sub_id,
             "type": "knx/subscribe_telegrams",
         })
-        resp = await self._ws.receive_json()
-        if resp.get("success"):
+        resp = await self._await_result(self._knx_sub_id)
+        if resp and resp.get("success"):
             logger.info("ha_client.knx_telegrams_subscribed", sub_id=self._knx_sub_id)
         else:
             logger.warning("ha_client.knx_telegrams_subscribe_failed", resp=resp)
@@ -387,23 +388,7 @@ class HAClient:
             if msg.type == aiohttp.WSMsgType.TEXT:
                 try:
                     data = json.loads(msg.data)
-                    if data.get("type") == "event":
-                        event = data.get("event", {})
-                        if (
-                            self._knx_sub_id is not None
-                            and data.get("id") == self._knx_sub_id
-                        ):
-                            # knx/subscribe_telegrams event — wrap as synthetic event
-                            # so the existing processor can route it by event_type.
-                            synthetic: dict[str, Any] = {
-                                "event_type": "knx.telegram",
-                                "data": event,
-                                "time_fired": event.get("timestamp"),
-                                "context": {},
-                            }
-                            await self._on_event(synthetic)
-                        else:
-                            await self._on_event(event)
+                    await self._handle_ws_payload(data)
                 except json.JSONDecodeError:
                     logger.warning("ha_client.invalid_json")
                 except Exception:
@@ -415,3 +400,43 @@ class HAClient:
                 break
 
         self._connected = False
+
+    async def _await_result(self, expected_id: int) -> dict[str, Any] | None:
+        """Wait for a matching WS result while safely handling interleaved events."""
+        if not self._ws:
+            return None
+
+        while True:
+            payload = await self._ws.receive_json()
+            payload_type = payload.get("type")
+
+            if payload_type == "result" and payload.get("id") == expected_id:
+                return payload
+
+            if payload_type == "event":
+                await self._handle_ws_payload(payload)
+                continue
+
+            logger.debug(
+                "ha_client.unexpected_during_result_wait",
+                expected_id=expected_id,
+                payload=payload,
+            )
+
+    async def _handle_ws_payload(self, data: dict[str, Any]) -> None:
+        """Handle a single parsed WS payload."""
+        if data.get("type") != "event":
+            return
+
+        event = data.get("event", {})
+        if self._knx_sub_id is not None and data.get("id") == self._knx_sub_id:
+            synthetic: dict[str, Any] = {
+                "event_type": "knx.telegram",
+                "data": event,
+                "time_fired": event.get("timestamp"),
+                "context": {},
+            }
+            await self._on_event(synthetic)
+            return
+
+        await self._on_event(event)

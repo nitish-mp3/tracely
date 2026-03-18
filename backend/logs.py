@@ -6,6 +6,7 @@ import base64
 import gzip
 import os
 import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -120,13 +121,29 @@ def snapshot_log_tail(
             logger.debug("logs.log_not_found", path=str(log_path))
             return None
 
-        # Atomically read tail without loading entire file
+        # Atomically read tail without loading entire file when seek is available.
+        # Some streams (e.g. /proc/1/fd/1) are not seekable, so we keep a rolling
+        # tail buffer as a fallback.
         with open(log_path, "rb") as f:
-            f.seek(0, 2)  # Seek to end
-            size = f.tell()
-            start = max(0, size - max_bytes)
-            f.seek(start)
-            data = f.read()
+            try:
+                f.seek(0, 2)  # Seek to end
+                size = f.tell()
+                start = max(0, size - max_bytes)
+                f.seek(start)
+                data = f.read()
+            except (OSError, ValueError):
+                chunks: deque[bytes] = deque()
+                total = 0
+                while True:
+                    chunk = f.read(64 * 1024)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    while total > max_bytes and chunks:
+                        removed = chunks.popleft()
+                        total -= len(removed)
+                data = b"".join(chunks)
 
         # Decode with error replacement for corrupted bytes
         text = data.decode(errors="replace")
