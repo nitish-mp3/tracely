@@ -1,5 +1,5 @@
 name: "Tracely"
-version: "3.1.7"
+version: "3.1.8"
 slug: "tracely"
 description: "Offline causal event tracing for Home Assistant — see human-readable, searchable, interactive causal trees and timelines of everything that happened."
 url: "https://github.com/nitish-mp3/tracely"
@@ -21,6 +21,7 @@ ports_description:
   8765/tcp: "Tracely Web UI and API"
 map:
   - data:rw
+  - config:ro
 options:
   purge_keep_days: 30
   log_level: "info"
