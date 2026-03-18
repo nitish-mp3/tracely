@@ -1870,6 +1870,7 @@ async def api_logs(limit: int = Query(100, ge=1, le=1000)) -> dict[str, Any]:
         
         return {
             "available": True,
+            "source": summary.get("source", ""),
             "size_bytes": summary.get("size_bytes", 0),
             "line_count": summary.get("line_count", 0),
             "error_count": summary.get("error_count", 0),

@@ -254,6 +254,7 @@
     gap: var(--sp-4);
     z-index: 50;
     backdrop-filter: blur(12px);
+    background: linear-gradient(180deg, var(--color-surface-hover), var(--color-surface));
   }
 
   .header-left {
@@ -299,6 +300,12 @@
     background: var(--color-bg-elevated);
     border-radius: var(--radius-md);
     border: 1px solid var(--color-border);
+    max-width: min(66vw, 980px);
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .nav-pills::-webkit-scrollbar {
+    display: none;
   }
   .nav-pill {
     display: flex;
@@ -310,6 +317,7 @@
     font-weight: 500;
     color: var(--color-text-muted);
     transition: all var(--duration-fast);
+    flex: 0 0 auto;
   }
   .nav-pill:hover {
     color: var(--color-text-secondary);
@@ -477,6 +485,27 @@
 
   /* Tablets: 768px and below */
   @media (max-width: 1024px) {
+    .app-header {
+      height: auto;
+      min-height: var(--header-h);
+      padding-top: var(--sp-2);
+      padding-bottom: var(--sp-2);
+      align-items: flex-start;
+    }
+    .header-left {
+      width: 100%;
+      min-width: 0;
+      flex-wrap: wrap;
+      row-gap: var(--sp-2);
+    }
+    .header-right {
+      margin-left: auto;
+      align-self: center;
+    }
+    .nav-pills {
+      width: 100%;
+      max-width: 100%;
+    }
     .search-input {
       width: 160px;
     }
@@ -519,6 +548,8 @@
     .nav-pills {
       gap: 1px;
       padding: 2px;
+      border-radius: var(--radius-lg);
+      box-shadow: inset 0 0 0 1px var(--color-border);
     }
 
     .nav-pill {
@@ -609,6 +640,9 @@
 
     .header-right {
       gap: var(--sp-1);
+      margin-left: 0;
+      width: 100%;
+      justify-content: flex-end;
     }
 
     .icon-btn {
@@ -671,6 +705,10 @@
 
     .header-right {
       display: none;
+    }
+
+    .nav-pills {
+      width: 100%;
     }
   }
 </style>

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import gzip
 import base64
+import gzip
+import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -16,6 +18,8 @@ CORE_LOG_PATHS = [
     Path("/config/home-assistant.log"),  # Standard HA OS location
     Path("/config/logs/home-assistant.log"),  # Some setups
     Path("/config/core.log"),  # Alternative naming
+    Path("/homeassistant/home-assistant.log"),
+    Path("/usr/share/hassio/homeassistant/home-assistant.log"),
 ]
 
 # Addon's own logs
@@ -23,14 +27,68 @@ ADDON_LOG_PATHS = [
     Path("/proc/1/fd/1"),  # Container stdout (pid 1 is our process)
 ]
 
+_MISSING_LOG_WARN_INTERVAL_SECONDS = 300
+_last_missing_log_warning_at: float = 0.0
+
+
+def _warn_missing_log_throttled(paths_checked: list[str]) -> None:
+    """Emit missing-log warning at most once per interval."""
+    global _last_missing_log_warning_at
+    now = time.time()
+    if now - _last_missing_log_warning_at >= _MISSING_LOG_WARN_INTERVAL_SECONDS:
+        logger.warning("logs.ha_core_log_not_found", paths_checked=paths_checked)
+        _last_missing_log_warning_at = now
+
+
+def _is_plausible_core_log(path: Path) -> bool:
+    """Heuristic filter for HA core log candidates."""
+    name = path.name.lower()
+    return (
+        name.endswith(".log")
+        and (
+            "home-assistant" in name
+            or "homeassistant" in name
+            or name == "core.log"
+            or "hass" in name
+        )
+    )
+
 
 def get_ha_core_log_path() -> Optional[Path]:
     """Find the HA core log file."""
+    paths_checked: list[str] = []
+
+    # 1) Explicit env override for unusual installations
+    custom_raw = os.environ.get("HA_CORE_LOG_PATH")
+    custom_path = Path(custom_raw).expanduser() if custom_raw else None
+    if custom_path:
+        paths_checked.append(str(custom_path))
+        if custom_path.exists() and custom_path.is_file():
+            logger.info("logs.ha_core_log_found", path=str(custom_path), source="env")
+            return custom_path
+
+    # 2) Known common locations
     for path in CORE_LOG_PATHS:
+        paths_checked.append(str(path))
         if path.exists():
-            logger.info("logs.ha_core_log_found", path=str(path))
+            logger.info("logs.ha_core_log_found", path=str(path), source="known_path")
             return path
-    logger.warning("logs.ha_core_log_not_found")
+
+    # 3) Recursive probe under /config for log-like names
+    config_root = Path("/config")
+    if config_root.exists():
+        candidates: list[Path] = []
+        for candidate in config_root.rglob("*.log"):
+            paths_checked.append(str(candidate))
+            if candidate.is_file() and _is_plausible_core_log(candidate):
+                candidates.append(candidate)
+
+        if candidates:
+            newest = max(candidates, key=lambda p: p.stat().st_mtime)
+            logger.info("logs.ha_core_log_found", path=str(newest), source="recursive_probe")
+            return newest
+
+    _warn_missing_log_throttled(paths_checked)
     return None
 
 
@@ -79,6 +137,7 @@ def snapshot_log_tail(
             encoded = base64.b64encode(compressed).decode("ascii")
             logger.debug(
                 "logs.snapshot_captured",
+                source_path=str(log_path),
                 size=len(text),
                 compressed_size=len(encoded),
             )
@@ -189,7 +248,17 @@ def get_log_summary(max_bytes: int = 100_000) -> dict[str, any]:
         - last_entry: last log entry timestamp (if parseable)
     """
     try:
+        source = "ha_core_log"
         snapshot = snapshot_log_tail(max_bytes=max_bytes, compress=True)
+
+        # Fallback to addon stdout if core log file is unavailable.
+        if not snapshot:
+            for addon_log in ADDON_LOG_PATHS:
+                snapshot = snapshot_log_tail(addon_log, max_bytes=max_bytes, compress=True)
+                if snapshot:
+                    source = "addon_stdout"
+                    break
+
         if not snapshot:
             return {
                 "available": False,
@@ -217,6 +286,7 @@ def get_log_summary(max_bytes: int = 100_000) -> dict[str, any]:
 
         return {
             "available": True,
+            "source": source,
             "snapshot": snapshot,
             "size_bytes": len(text),
             "line_count": len([l for l in lines if l.strip()]),

@@ -93,6 +93,7 @@ class TreeResponse(BaseModel):
 class LogInfo(BaseModel):
     """Log file diagnostic info."""
     available: bool
+    source: str = ""
     size_bytes: int = 0
     line_count: int = 0
     error_count: int = 0

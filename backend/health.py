@@ -75,6 +75,7 @@ async def get_health(
     if log_summary.get("available"):
         ha_core_log = LogInfo(
             available=True,
+            source=log_summary.get("source", ""),
             size_bytes=log_summary.get("size_bytes", 0),
             line_count=log_summary.get("line_count", 0),
             error_count=log_summary.get("error_count", 0),
@@ -84,6 +85,7 @@ async def get_health(
     else:
         ha_core_log = LogInfo(
             available=False,
+            source=log_summary.get("source", ""),
             error=log_summary.get("error"),
         )
 
