@@ -54,7 +54,7 @@ export async function getEvents(params = {}) {
     if (v !== undefined && v !== null && v !== '') qs.set(k, v);
   }
   const query = qs.toString();
-  return request(`/api/events${query ? '?' + query : ''}`);
+  return request(`/api/events${query ? '?' + query : ''}`, { timeoutMs: 20000 });
 }
 
 export async function getEvent(id) {
@@ -104,18 +104,18 @@ export async function getHealth() {
 // ─── Stats ──────────────────────────────────────────────
 
 export async function getStats() {
-  return request('/api/stats');
+  return request('/api/stats', { timeoutMs: 30000 });
 }
 
 // ─── System Health ──────────────────────────────────────
 
 export async function getSystemHealth() {
-  return request('/api/system');
+  return request('/api/system', { timeoutMs: 30000 });
 }
 
 export async function getLifecycleEvents(limit = 100) {
   const qs = new URLSearchParams({ limit });
-  return request(`/api/lifecycle?${qs}`);
+  return request(`/api/lifecycle?${qs}`, { timeoutMs: 20000 });
 }
 
 export async function getNetworkDevices(scan = false) {

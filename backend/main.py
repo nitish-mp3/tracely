@@ -89,6 +89,11 @@ _runtime_status: dict[str, Any] = {
     "ha_restart_count": 0,
 }
 
+# Endpoint-level response cache
+_response_cache: dict[str, tuple[float, Any]] = {}
+_CACHE_TTL_SYSTEM = 30.0   # seconds
+_CACHE_TTL_STATS = 60.0
+
 # KNX diagnostics — track recent raw events for debugging
 _knx_diag: dict[str, Any] = {
     "received": 0,
@@ -1696,6 +1701,24 @@ async def api_network_devices(scan: bool = Query(default=False)) -> dict[str, An
 @app.get("/api/system")
 async def api_system_health() -> dict[str, Any]:
     """System health: network, entities, integrations, areas, offline periods."""
+    # Return cached result if still fresh (heavy endpoint)
+    cached = _response_cache.get("system_health")
+    if cached and (time.time() - cached[0]) < _CACHE_TTL_SYSTEM:
+        # Always update live metrics even in cached response
+        result = dict(cached[1])
+        ws_connected = ha_client.connected if ha_client else False
+        uptime_s = int(time.time() - _start_time) if _start_time else 0
+        runtime = get_runtime_metrics()
+        result.update({
+            "ws_connected": ws_connected,
+            "uptime_seconds": uptime_s,
+            "cpu_percent": round(float(runtime.get("cpu_percent", 0.0)), 2),
+            "memory_percent": round(float(runtime.get("memory_percent", 0.0)), 2),
+            "memory_rss_mb": round(float(runtime.get("memory_rss_mb", 0.0)), 2),
+            "event_queue_depth": _event_queue.qsize(),
+        })
+        return result
+
     entities = entity_map.all_entities() if entity_map else []
 
     unavailable = []
@@ -1809,7 +1832,7 @@ async def api_system_health() -> dict[str, Any]:
         },
     )
 
-    return {
+    result = {
         "ws_connected": ws_connected,
         "total_entities": total_devices,
         "unavailable": unavailable,
@@ -1831,6 +1854,8 @@ async def api_system_health() -> dict[str, Any]:
         "last_async_block_ms": round(float(_runtime_status.get("last_async_block_ms", 0.0)), 2),
         "ha_restart_count": int(_runtime_status.get("ha_restart_count", 0)),
     }
+    _response_cache["system_health"] = (time.time(), result)
+    return result
 
 
 @app.get("/api/incidents")

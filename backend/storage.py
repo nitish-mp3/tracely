@@ -15,6 +15,27 @@ from .models import EntityRecord, EventRecord
 
 logger = structlog.get_logger(__name__)
 
+
+class _Cache:
+    """Simple TTL cache for expensive aggregate queries."""
+    def __init__(self) -> None:
+        self._store: dict[str, tuple[float, Any]] = {}
+
+    def get(self, key: str, ttl: float = 30.0) -> Any | None:
+        entry = self._store.get(key)
+        if entry and (time.monotonic() - entry[0]) < ttl:
+            return entry[1]
+        return None
+
+    def set(self, key: str, value: Any) -> None:
+        self._store[key] = (time.monotonic(), value)
+
+    def invalidate(self, key: str | None = None) -> None:
+        if key:
+            self._store.pop(key, None)
+        else:
+            self._store.clear()
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS events (
   id             TEXT    PRIMARY KEY,
@@ -38,6 +59,9 @@ CREATE INDEX IF NOT EXISTS idx_time       ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_entity     ON events(entity_id);
 CREATE INDEX IF NOT EXISTS idx_event_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_domain     ON events(domain);
+CREATE INDEX IF NOT EXISTS idx_entity_time ON events(entity_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_domain_time ON events(domain, timestamp);
+CREATE INDEX IF NOT EXISTS idx_evt_type_time ON events(event_type, timestamp);
 
 CREATE TABLE IF NOT EXISTS entities (
   entity_id     TEXT PRIMARY KEY,
@@ -156,6 +180,7 @@ class Storage:
     def __init__(self, settings: Settings) -> None:
         self._db_path = settings.db_path
         self._db: aiosqlite.Connection | None = None
+        self._cache = _Cache()
 
     async def init(self) -> None:
         """Open database, set pragmas, create schema."""
@@ -164,9 +189,14 @@ class Storage:
             os.makedirs(db_dir, exist_ok=True)
         self._db = await aiosqlite.connect(self._db_path)
         self._db.row_factory = aiosqlite.Row
+        # Core WAL + sync pragmas
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA synchronous=NORMAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
+        # Performance pragmas — critical for large DBs
+        await self._db.execute("PRAGMA cache_size=-65536")   # 64MB cache
+        await self._db.execute("PRAGMA temp_store=MEMORY")
+        await self._db.execute("PRAGMA mmap_size=268435456") # 256MB mmap
         await self._db.executescript(SCHEMA_SQL)
         # FTS must be created separately (not inside executescript with other DDL)
         await self._db.execute(FTS_SQL)
@@ -176,6 +206,8 @@ class Storage:
                 (key, value),
             )
         await self._db.commit()
+        # Optimize query planner after schema is ready
+        await self._db.execute("PRAGMA optimize")
         logger.info("storage.initialized", db_path=self._db_path)
 
     async def close(self) -> None:
@@ -213,34 +245,44 @@ class Storage:
             (event.id, raw_bytes),
         )
         await self._db.commit()
+        self._cache.invalidate("event_count")
 
     async def insert_events_batch(self, events: list[EventRecord]) -> None:
         assert self._db is not None
-        for event in events:
-            await self._db.execute(
+        await self._db.execute("BEGIN")
+        try:
+            await self._db.executemany(
                 """INSERT OR IGNORE INTO events
                    (id, parent_id, event_type, domain, service, entity_id,
                     payload, name, integration, area, timestamp, user_id,
                     important, confidence, generated_root)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    event.id, event.parent_id, event.event_type,
-                    event.domain, event.service, event.entity_id,
-                    event.payload, event.name, event.integration,
-                    event.area, event.timestamp, event.user_id,
-                    event.important, event.confidence, event.generated_root,
-                ),
+                [
+                    (
+                        e.id, e.parent_id, e.event_type,
+                        e.domain, e.service, e.entity_id,
+                        e.payload, e.name, e.integration,
+                        e.area, e.timestamp, e.user_id,
+                        e.important, e.confidence, e.generated_root,
+                    )
+                    for e in events
+                ],
             )
-            await self._db.execute(
+            await self._db.executemany(
                 "INSERT OR IGNORE INTO events_fts (event_id, name, entity_id, payload) VALUES (?,?,?,?)",
-                (event.id, event.name or "", event.entity_id or "", event.payload),
+                [(e.id, e.name or "", e.entity_id or "", e.payload) for e in events],
             )
-            raw_bytes = zlib.compress(event.payload.encode("utf-8"))
-            await self._db.execute(
+            raw_rows = [(e.id, zlib.compress(e.payload.encode("utf-8"))) for e in events]
+            await self._db.executemany(
                 "INSERT OR IGNORE INTO raw_events (event_id, raw_json) VALUES (?,?)",
-                (event.id, raw_bytes),
+                raw_rows,
             )
-        await self._db.commit()
+            await self._db.commit()
+        except Exception:
+            await self._db.execute("ROLLBACK")
+            raise
+        self._cache.invalidate("event_count")
+        self._cache.invalidate("activity_stats")
 
     async def get_events(
         self,
@@ -288,11 +330,24 @@ class Storage:
             params.append(to_ts)
 
         where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        has_filters = bool(conditions)
 
-        count_rows = await self._db.execute_fetchall(
-            f"SELECT COUNT(*) as cnt FROM events{where}", params,
-        )
-        total = count_rows[0]["cnt"] if count_rows else 0
+        # For unfiltered queries use cached count (avoids full-table COUNT(*) scan)
+        if not has_filters:
+            cached_total = self._cache.get("event_count", ttl=30.0)
+            if cached_total is not None:
+                total = cached_total
+            else:
+                count_rows = await self._db.execute_fetchall(
+                    "SELECT COUNT(*) as cnt FROM events", [],
+                )
+                total = count_rows[0]["cnt"] if count_rows else 0
+                self._cache.set("event_count", total)
+        else:
+            count_rows = await self._db.execute_fetchall(
+                f"SELECT COUNT(*) as cnt FROM events{where}", params,
+            )
+            total = count_rows[0]["cnt"] if count_rows else 0
 
         offset = (page - 1) * limit
         rows = await self._db.execute_fetchall(
@@ -564,8 +619,13 @@ class Storage:
 
     async def get_event_count(self) -> int:
         assert self._db is not None
+        cached = self._cache.get("event_count", ttl=30.0)
+        if cached is not None:
+            return cached
         rows = await self._db.execute_fetchall("SELECT COUNT(*) as cnt FROM events")
-        return rows[0]["cnt"] if rows else 0
+        total = rows[0]["cnt"] if rows else 0
+        self._cache.set("event_count", total)
+        return total
 
     async def get_last_event_ts(self) -> int | None:
         assert self._db is not None
@@ -673,6 +733,10 @@ class Storage:
         """Comprehensive activity statistics for the stats dashboard."""
         assert self._db is not None
 
+        cached = self._cache.get("activity_stats", ttl=60.0)
+        if cached is not None:
+            return cached
+
         # Total events
         total_count = await self.get_event_count()
 
@@ -751,7 +815,7 @@ class Storage:
         )
         peak_hour = rows[0]["hour"] if rows else None
 
-        return {
+        result = {
             "total_events": total_count,
             "entity_counts": entity_counts,
             "domain_counts": domain_counts,
@@ -763,6 +827,8 @@ class Storage:
             "confidence": confidence,
             "peak_hour": peak_hour,
         }
+        self._cache.set("activity_stats", result)
+        return result
 
     # ─── Purge ─────────────────────────────────────────────
 
@@ -782,6 +848,7 @@ class Storage:
             "DELETE FROM events WHERE timestamp < ?", (before_ts,),
         )
         await self._db.commit()
+        self._cache.invalidate()  # purge invalidates all cached counts/stats
         return cursor.rowcount or 0
 
     # ─── Config ────────────────────────────────────────────
