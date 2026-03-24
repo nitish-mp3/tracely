@@ -31,7 +31,11 @@
     loading = true;
     error = null;
     try {
-      await Promise.all([loadAlerts(), refreshCounts(), loadOffline()]);
+      // Don't let counts/offline failures block the main alert list
+      const [alertResult] = await Promise.allSettled([loadAlerts(), refreshCounts(), loadOffline()]);
+      if (alertResult.status === 'rejected') {
+        error = alertResult.reason?.message || 'Failed to load alerts';
+      }
     } catch (e) {
       error = e.message;
     }

@@ -283,7 +283,7 @@ export async function getAlerts(params = {}) {
 }
 
 export async function getAlertCounts() {
-  return request('/api/alerts/counts');
+  return request('/api/alerts/counts', { timeoutMs: 5000 });
 }
 
 export async function acknowledgeAlert(alertId) {

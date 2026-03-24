@@ -37,6 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_parent     ON events(parent_id);
 CREATE INDEX IF NOT EXISTS idx_time       ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_entity     ON events(entity_id);
 CREATE INDEX IF NOT EXISTS idx_event_type ON events(event_type);
+CREATE INDEX IF NOT EXISTS idx_domain     ON events(domain);
 
 CREATE TABLE IF NOT EXISTS entities (
   entity_id     TEXT PRIMARY KEY,
@@ -1085,7 +1086,10 @@ class Storage:
                  SUM(CASE WHEN severity = 'critical' AND acknowledged = 0 THEN 1 ELSE 0 END) as critical_unread
                FROM alerts""",
         )
-        r = rows[0] if rows else {}
+        if rows:
+            r = dict(rows[0])
+        else:
+            r = {}
         return {
             "total": r.get("total", 0) or 0,
             "unread": r.get("unread", 0) or 0,
