@@ -2012,7 +2012,7 @@ async def api_alerts(
             integration=row.get("integration"),
             details=details,
             acknowledged=bool(row.get("acknowledged", 0)),
-            timestamp=_ms_to_iso(row.get("timestamp", 0)),
+            timestamp=datetime.fromtimestamp((row.get("timestamp") or 0) / 1000, tz=timezone.utc).isoformat(),
         ).model_dump())
 
     return {
