@@ -59,9 +59,6 @@ CREATE INDEX IF NOT EXISTS idx_time       ON events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_entity     ON events(entity_id);
 CREATE INDEX IF NOT EXISTS idx_event_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_domain     ON events(domain);
-CREATE INDEX IF NOT EXISTS idx_entity_time ON events(entity_id, timestamp);
-CREATE INDEX IF NOT EXISTS idx_domain_time ON events(domain, timestamp);
-CREATE INDEX IF NOT EXISTS idx_evt_type_time ON events(event_type, timestamp);
 
 CREATE TABLE IF NOT EXISTS entities (
   entity_id     TEXT PRIMARY KEY,
@@ -193,10 +190,9 @@ class Storage:
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA synchronous=NORMAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
-        # Performance pragmas — critical for large DBs
-        await self._db.execute("PRAGMA cache_size=-65536")   # 64MB cache
+        # Performance pragmas — conservative for RPi
+        await self._db.execute("PRAGMA cache_size=-8192")    # 8MB cache
         await self._db.execute("PRAGMA temp_store=MEMORY")
-        await self._db.execute("PRAGMA mmap_size=268435456") # 256MB mmap
         await self._db.executescript(SCHEMA_SQL)
         # FTS must be created separately (not inside executescript with other DDL)
         await self._db.execute(FTS_SQL)
@@ -206,8 +202,6 @@ class Storage:
                 (key, value),
             )
         await self._db.commit()
-        # Optimize query planner after schema is ready
-        await self._db.execute("PRAGMA optimize")
         logger.info("storage.initialized", db_path=self._db_path)
 
     async def close(self) -> None:
