@@ -8,14 +8,16 @@
   import LifecycleMonitor from './views/LifecycleMonitor.svelte';
   import KnxMonitor from './views/KnxMonitor.svelte';
   import ZigbeeMonitor from './views/ZigbeeMonitor.svelte';
+  import AlertsView from './views/AlertsView.svelte';
   import Toast from './components/Toast.svelte';
   import { currentView, filtersOpen, healthStatus, addToast } from './stores/config.js';
   import { filters, hasActiveFilters, viewHistory } from './stores/events.js';
-  import { getHealth } from './lib/api.js';
+  import { getHealth, getAlertCounts } from './lib/api.js';
   import { onMount } from 'svelte';
 
   let searchQuery = '';
   let healthInterval;
+  let alertCounts = { total: 0, unread: 0, critical_unread: 0 };
 
   function handleNav(view) {
     // Push current view to history for back-navigation
@@ -57,9 +59,16 @@
 
   onMount(() => {
     checkHealth();
-    healthInterval = setInterval(checkHealth, 30000);
+    refreshAlertCounts();
+    healthInterval = setInterval(() => { checkHealth(); refreshAlertCounts(); }, 30000);
     return () => clearInterval(healthInterval);
   });
+
+  async function refreshAlertCounts() {
+    try {
+      alertCounts = await getAlertCounts();
+    } catch { /* silent */ }
+  }
 
   // Keep header search in sync with filters.q (bidirectional)
   $: if ($filters.q !== searchQuery && $filters.q === '') {
@@ -157,6 +166,19 @@
           </svg>
           Zigbee
         </button>
+        <button
+          class="nav-pill alerts-pill"
+          class:active={$currentView === 'alerts'}
+          on:click={() => handleNav('alerts')}
+        >
+          <svg class="nav-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+            <path d="M8 1.5L1.5 13h13L8 1.5z"/><path d="M8 6v3M8 11h.01"/>
+          </svg>
+          Alerts
+          {#if alertCounts.unread > 0}
+            <span class="alert-badge">{alertCounts.unread > 99 ? '99+' : alertCounts.unread}</span>
+          {/if}
+        </button>
       </nav>
     </div>
 
@@ -223,6 +245,8 @@
       <KnxMonitor />
     {:else if $currentView === 'zigbee'}
       <ZigbeeMonitor />
+    {:else if $currentView === 'alerts'}
+      <AlertsView />
     {/if}
   </main>
 
@@ -335,6 +359,25 @@
   }
   .nav-pill.zigbee-pill.active {
     color: #22c55e;
+  }
+  .nav-pill.alerts-pill.active {
+    color: #f87171;
+  }
+  .alert-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: var(--radius-full);
+    background: var(--color-error);
+    color: white;
+    min-width: 16px;
+    text-align: center;
+    line-height: 1.3;
+    animation: pulse-alert 2s infinite;
+  }
+  @keyframes pulse-alert {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
   }
   .nav-icon {
     width: 14px;

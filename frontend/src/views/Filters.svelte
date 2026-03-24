@@ -29,7 +29,7 @@
   function handleClear() {
     $filters = {
       entity: '', domain: '', area: '', user_id: '',
-      event_type: '', from: '', to: '', q: '',
+      event_type: '', integration: '', from: '', to: '', q: '',
       bookmarksOnly: false, inferredOnly: false,
     };
     entitySearch = ''; domainSearch = ''; areaSearch = '';
@@ -102,6 +102,22 @@
     const from = new Date(now.getTime() - hours * 3600000);
     $filters.from = toLocalISOString(from);
     $filters.to = toLocalISOString(now);
+    activePreset = hours;
+  }
+
+  function clearTimeRange() {
+    $filters.from = '';
+    $filters.to = '';
+    activePreset = null;
+  }
+
+  let activePreset = null;
+
+  // Sync activePreset with filters on load
+  $: {
+    if (!$filters.from && !$filters.to) {
+      activePreset = null;
+    }
   }
 
   // Auto-default "to" to now when only "from" is set (on apply)
@@ -304,15 +320,31 @@
       <div class="section-divider" />
 
       <div class="section">
-        <span class="section-title">Time</span>
+        <span class="section-title">Time Range</span>
         <div class="filter-group">
           <div class="time-presets">
-            <button class="preset-btn" on:click={() => setTimePreset(1)}>Last 1h</button>
-            <button class="preset-btn" on:click={() => setTimePreset(6)}>Last 6h</button>
-            <button class="preset-btn" on:click={() => setTimePreset(24)}>Last 24h</button>
-            <button class="preset-btn" on:click={() => setTimePreset(168)}>Last 7d</button>
-            <button class="preset-btn" on:click={() => setTimePreset(720)}>Last 30d</button>
+            <button class="preset-btn" class:active={activePreset === 1} on:click={() => setTimePreset(1)}>
+              <span class="preset-label">1h</span>
+              <span class="preset-sub">Last hour</span>
+            </button>
+            <button class="preset-btn" class:active={activePreset === 6} on:click={() => setTimePreset(6)}>
+              <span class="preset-label">6h</span>
+              <span class="preset-sub">Last 6 hours</span>
+            </button>
+            <button class="preset-btn" class:active={activePreset === 24} on:click={() => setTimePreset(24)}>
+              <span class="preset-label">24h</span>
+              <span class="preset-sub">Last day</span>
+            </button>
+            <button class="preset-btn" class:active={activePreset === 168} on:click={() => setTimePreset(168)}>
+              <span class="preset-label">7d</span>
+              <span class="preset-sub">Last week</span>
+            </button>
+            <button class="preset-btn" class:active={activePreset === 720} on:click={() => setTimePreset(720)}>
+              <span class="preset-label">30d</span>
+              <span class="preset-sub">Last month</span>
+            </button>
           </div>
+
           <div class="date-row">
             <div class="date-input-wrap">
               <span class="date-label">From</span>
@@ -324,8 +356,14 @@
               <input class="input-field" type="datetime-local" bind:value={$filters.to} placeholder="Now" aria-label="To date" />
             </div>
           </div>
-          {#if $filters.from && !$filters.to}
-            <span class="time-hint">"To" defaults to now</span>
+
+          {#if $filters.from || $filters.to}
+            <button class="time-clear-btn" on:click={clearTimeRange}>
+              <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3l6 6M9 3l-6 6"/></svg>
+              Clear time range
+            </button>
+          {:else}
+            <span class="time-hint">Select a preset or pick custom dates</span>
           {/if}
         </div>
       </div>
@@ -532,18 +570,40 @@
   }
 
   .time-presets {
-    display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: var(--sp-2);
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: var(--sp-2);
   }
   .preset-btn {
-    padding: 4px 12px; border-radius: var(--radius-full);
+    display: flex; flex-direction: column; align-items: center; gap: 2px;
+    padding: 8px 4px; border-radius: var(--radius-md);
     font-size: var(--text-2xs); font-weight: 600;
     background: var(--color-surface-hover); color: var(--color-text-secondary);
     border: 1px solid var(--color-border); transition: all var(--duration-fast);
+    cursor: pointer;
   }
   .preset-btn:hover {
     background: var(--color-primary-soft); color: var(--color-primary);
     border-color: var(--color-primary);
   }
+  .preset-btn.active {
+    background: var(--color-primary-soft); color: var(--color-primary);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 2px var(--color-primary-soft);
+  }
+  .preset-label {
+    font-size: var(--text-sm); font-weight: 700; line-height: 1;
+  }
+  .preset-sub {
+    font-size: 9px; font-weight: 500; opacity: 0.6;
+    white-space: nowrap;
+  }
+  .time-clear-btn {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 0; font-size: var(--text-xs); font-weight: 500;
+    color: var(--color-error); cursor: pointer;
+    transition: opacity var(--duration-fast);
+  }
+  .time-clear-btn svg { width: 10px; height: 10px; }
+  .time-clear-btn:hover { opacity: 0.7; }
   .time-hint {
     font-size: var(--text-2xs); color: var(--color-text-muted);
     font-style: italic; margin-top: 2px;

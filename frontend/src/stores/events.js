@@ -13,8 +13,10 @@ export const pagination = writable({
   total: 0,
 });
 
-// Active filters
-export const filters = writable({
+// --- Filter persistence helpers ---
+const FILTER_STORAGE_KEY = 'tracely_filters';
+
+const defaultFilters = {
   entity: '',
   domain: '',
   area: '',
@@ -26,7 +28,51 @@ export const filters = writable({
   q: '',
   bookmarksOnly: false,
   inferredOnly: false,
-});
+};
+
+function loadFilters() {
+  try {
+    const raw = sessionStorage.getItem(FILTER_STORAGE_KEY);
+    if (raw) {
+      const stored = JSON.parse(raw);
+      // Merge with defaults so new keys are always present
+      return { ...defaultFilters, ...stored };
+    }
+  } catch { /* ignore corrupt storage */ }
+  return { ...defaultFilters };
+}
+
+function saveFilters(f) {
+  try {
+    sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(f));
+  } catch { /* quota etc */ }
+}
+
+// Active filters — restored from sessionStorage, auto-saved on change
+function createPersistentFilters() {
+  const { subscribe, set, update } = writable(loadFilters());
+  return {
+    subscribe,
+    set(value) {
+      saveFilters(value);
+      set(value);
+    },
+    update(fn) {
+      update((current) => {
+        const next = fn(current);
+        saveFilters(next);
+        return next;
+      });
+    },
+    reset() {
+      const fresh = { ...defaultFilters };
+      saveFilters(fresh);
+      set(fresh);
+    },
+  };
+}
+
+export const filters = createPersistentFilters();
 
 // Currently selected event (for trace view)
 export const selectedEventId = writable(null);

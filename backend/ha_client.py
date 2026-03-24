@@ -131,6 +131,110 @@ class HAClient:
             logger.debug("ha_client.fetch_error_log_error")
             return None
 
+    async def fetch_supervisor_logs(self) -> dict[str, Any] | None:
+        """Fetch Supervisor-level host info and recent logs for restart/crash detection.
+
+        Uses the Supervisor API endpoints:
+        - /host/info → uptime, boot timestamp
+        - /core/info → HA Core version, state
+        - /supervisor/logs → recent supervisor logs
+        """
+        if not self._session or self._session.closed:
+            self._session = aiohttp.ClientSession()
+
+        # Supervisor API uses a different base URL
+        headers = {"Authorization": f"Bearer {self._token}"}
+        result: dict[str, Any] = {"available": False}
+
+        # Try /core/info first (always available under supervisor)
+        try:
+            async with self._session.get(
+                "http://supervisor/core/info",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    info = data.get("data", data)
+                    result["available"] = True
+                    result["core_version"] = info.get("version", "")
+                    result["core_state"] = info.get("state", "")
+                    result["machine"] = info.get("machine", "")
+                    result["arch"] = info.get("arch", "")
+        except Exception:
+            logger.debug("ha_client.supervisor_core_info_unavailable")
+
+        # Try /host/info for uptime and boot info
+        try:
+            async with self._session.get(
+                "http://supervisor/host/info",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    info = data.get("data", data)
+                    result["available"] = True
+                    result["hostname"] = info.get("hostname", "")
+                    result["operating_system"] = info.get("operating_system", "")
+                    result["kernel"] = info.get("kernel", "")
+                    result["boot_timestamp"] = info.get("boot_timestamp", "")
+                    result["startup_time"] = info.get("startup_time", "")
+                    result["disk_total"] = info.get("disk_total", 0)
+                    result["disk_used"] = info.get("disk_used", 0)
+                    result["disk_free"] = info.get("disk_free", 0)
+        except Exception:
+            logger.debug("ha_client.supervisor_host_info_unavailable")
+
+        # Try /supervisor/info
+        try:
+            async with self._session.get(
+                "http://supervisor/supervisor/info",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    info = data.get("data", data)
+                    result["supervisor_version"] = info.get("version", "")
+                    result["supervisor_healthy"] = info.get("healthy", True)
+                    result["supervisor_supported"] = info.get("supported", True)
+        except Exception:
+            logger.debug("ha_client.supervisor_info_unavailable")
+
+        # Try to get recent supervisor logs (plain text)
+        try:
+            async with self._session.get(
+                "http://supervisor/supervisor/logs",
+                headers={**headers, "Accept": "text/plain"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    # Only keep last 10KB of logs
+                    if len(text) > 10_000:
+                        text = text[-10_000:]
+                    result["supervisor_logs"] = text
+        except Exception:
+            logger.debug("ha_client.supervisor_logs_unavailable")
+
+        # Try core logs too
+        try:
+            async with self._session.get(
+                "http://supervisor/core/logs",
+                headers={**headers, "Accept": "text/plain"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status == 200:
+                    text = await resp.text()
+                    if len(text) > 10_000:
+                        text = text[-10_000:]
+                    result["core_logs"] = text
+        except Exception:
+            logger.debug("ha_client.core_logs_unavailable")
+
+        return result if result.get("available") else None
+
     async def _ws_command(self, command: dict[str, Any]) -> dict[str, Any] | None:
         """Send a one-shot WS command and return the result (needs active connection)."""
         if not self._ws or self._ws.closed:

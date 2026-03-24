@@ -271,3 +271,95 @@ export function subscribeKnxEvents(onTelegram) {
     }
   };
 }
+
+// ─── Alerts / Notifications ────────────────────────────
+
+export async function getAlerts(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+  }
+  return request(`/api/alerts${qs.toString() ? '?' + qs : ''}`);
+}
+
+export async function getAlertCounts() {
+  return request('/api/alerts/counts');
+}
+
+export async function acknowledgeAlert(alertId) {
+  return request(`/api/alerts/${encodeURIComponent(alertId)}/acknowledge`, {
+    method: 'POST',
+  });
+}
+
+export async function acknowledgeAllAlerts() {
+  return request('/api/alerts/acknowledge-all', { method: 'POST' });
+}
+
+export async function getOfflineDevices() {
+  return request('/api/devices/offline');
+}
+
+// Alert SSE (separate singleton)
+let _alertSseSource = null;
+let _alertSseReconnectTimer = null;
+let _alertSseRetryDelay = 1000;
+let _alertSseStopped = false;
+let _alertSseListeners = new Set();
+
+function _alertSseConnect() {
+  if (_alertSseStopped) return;
+  const url = `${BASE}/api/alerts/stream`;
+  _alertSseSource = new EventSource(url);
+  _alertSseSource.onmessage = (msg) => {
+    try {
+      const alert = JSON.parse(msg.data);
+      _alertSseListeners.forEach(fn => fn(alert));
+    } catch { /* skip */ }
+  };
+  _alertSseSource.onerror = () => {
+    if (_alertSseStopped) return;
+    _alertSseSource.close();
+    _alertSseReconnectTimer = setTimeout(() => {
+      _alertSseRetryDelay = Math.min(_alertSseRetryDelay * 1.5, 30000);
+      _alertSseConnect();
+    }, _alertSseRetryDelay);
+  };
+}
+
+/** Subscribe to live alert events. Returns unsubscribe fn. */
+export function subscribeAlerts(onAlert) {
+  if (_alertSseListeners.size === 0) {
+    _alertSseConnect();
+  }
+  _alertSseListeners.add(onAlert);
+  return () => {
+    _alertSseListeners.delete(onAlert);
+    if (_alertSseListeners.size === 0 && _alertSseSource) {
+      _alertSseStopped = true;
+      _alertSseSource.close();
+      _alertSseSource = null;
+      _alertSseStopped = false;
+    }
+  };
+}
+
+// ─── Supervisor ────────────────────────────────────────
+
+export async function getSupervisorInfo() {
+  return request('/api/supervisor');
+}
+
+// ─── Incidents ─────────────────────────────────────────
+
+export async function getIncidents(params = {}) {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+  }
+  return request(`/api/incidents${qs.toString() ? '?' + qs : ''}`);
+}
+
+export async function getLogs(limit = 200) {
+  return request(`/api/logs?limit=${limit}`);
+}

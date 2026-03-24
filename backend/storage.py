@@ -114,6 +114,23 @@ CREATE TABLE IF NOT EXISTS knx_group_addresses (
   total_responses INTEGER DEFAULT 0,
   last_value      TEXT    -- JSON-encoded last decoded value
 );
+
+CREATE TABLE IF NOT EXISTS alerts (
+  id              TEXT    PRIMARY KEY,
+  alert_type      TEXT    NOT NULL,   -- 'device_offline' | 'multi_device_offline' | 'device_online' | 'ha_restart' | 'ha_crash'
+  severity        TEXT    NOT NULL,   -- 'info' | 'warning' | 'critical'
+  title           TEXT    NOT NULL,
+  message         TEXT    NOT NULL,
+  entity_id       TEXT,
+  integration     TEXT,
+  details         TEXT    NOT NULL,   -- JSON
+  acknowledged    INTEGER DEFAULT 0,
+  timestamp       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_alerts_time ON alerts(timestamp);
+CREATE INDEX IF NOT EXISTS idx_alerts_type ON alerts(alert_type);
+CREATE INDEX IF NOT EXISTS idx_alerts_ack  ON alerts(acknowledged);
+CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
 """
 
 FTS_SQL = """
@@ -975,3 +992,102 @@ class Storage:
             (group_address, around_ts - window_ms, around_ts + window_ms, around_ts),
         )
         return dict(rows[0]) if rows else None
+
+    # ─── Alerts ────────────────────────────────────────────
+
+    async def insert_alert(
+        self,
+        *,
+        alert_id: str,
+        alert_type: str,
+        severity: str,
+        title: str,
+        message: str,
+        entity_id: str | None,
+        integration: str | None,
+        details: str,
+        timestamp: int,
+    ) -> None:
+        assert self._db is not None
+        await self._db.execute(
+            """INSERT OR IGNORE INTO alerts
+               (id, alert_type, severity, title, message, entity_id,
+                integration, details, acknowledged, timestamp)
+               VALUES (?,?,?,?,?,?,?,?,0,?)""",
+            (alert_id, alert_type, severity, title, message,
+             entity_id, integration, details, timestamp),
+        )
+        await self._db.commit()
+
+    async def get_alerts(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        alert_type: str | None = None,
+        severity: str | None = None,
+        acknowledged: bool | None = None,
+        from_ts: int | None = None,
+        to_ts: int | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        assert self._db is not None
+        conditions: list[str] = []
+        params: list[Any] = []
+        if alert_type:
+            conditions.append("alert_type = ?")
+            params.append(alert_type)
+        if severity:
+            conditions.append("severity = ?")
+            params.append(severity)
+        if acknowledged is not None:
+            conditions.append("acknowledged = ?")
+            params.append(1 if acknowledged else 0)
+        if from_ts is not None:
+            conditions.append("timestamp >= ?")
+            params.append(from_ts)
+        if to_ts is not None:
+            conditions.append("timestamp <= ?")
+            params.append(to_ts)
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        count_rows = await self._db.execute_fetchall(
+            f"SELECT COUNT(*) as cnt FROM alerts{where}", params,
+        )
+        total = count_rows[0]["cnt"] if count_rows else 0
+        rows = await self._db.execute_fetchall(
+            f"SELECT * FROM alerts{where} ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        )
+        return [dict(r) for r in rows], total
+
+    async def acknowledge_alert(self, alert_id: str) -> bool:
+        assert self._db is not None
+        cursor = await self._db.execute(
+            "UPDATE alerts SET acknowledged = 1 WHERE id = ?",
+            (alert_id,),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def acknowledge_all_alerts(self) -> int:
+        assert self._db is not None
+        cursor = await self._db.execute(
+            "UPDATE alerts SET acknowledged = 1 WHERE acknowledged = 0",
+        )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def get_alert_counts(self) -> dict[str, int]:
+        assert self._db is not None
+        rows = await self._db.execute_fetchall(
+            """SELECT
+                 COUNT(*) as total,
+                 SUM(CASE WHEN acknowledged = 0 THEN 1 ELSE 0 END) as unread,
+                 SUM(CASE WHEN severity = 'critical' AND acknowledged = 0 THEN 1 ELSE 0 END) as critical_unread
+               FROM alerts""",
+        )
+        r = rows[0] if rows else {}
+        return {
+            "total": r.get("total", 0) or 0,
+            "unread": r.get("unread", 0) or 0,
+            "critical_unread": r.get("critical_unread", 0) or 0,
+        }

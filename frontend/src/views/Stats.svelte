@@ -598,5 +598,7 @@
     .kpi-value { font-size: 20px; }
     .heatmap-grid { grid-template-columns: repeat(4, 1fr); }
     .bar-chart { height: 120px; }
+    .entity-header .rank-col, .entity-row .rank-col { display: none; }
+    .compare-card { padding: var(--sp-4); }
   }
 </style>

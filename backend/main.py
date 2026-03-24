@@ -29,6 +29,7 @@ from .entity_map import EntityMap
 from .ha_client import HAClient
 from .health import get_health, get_metrics_text, get_runtime_metrics
 from .models import (
+    AlertResponse,
     BookmarkRequest,
     EventRecord,
     EventResponse,
@@ -44,6 +45,7 @@ from .normalizer import Normalizer
 from .purge import PurgeManager
 from .storage import Storage
 from .tree_builder import TreeBuilder
+from .device_monitor import DeviceMonitor
 from . import logs
 
 logger = structlog.get_logger(__name__)
@@ -56,8 +58,12 @@ entity_map = EntityMap()
 normalizer = Normalizer(entity_map)
 tree_builder = TreeBuilder(storage, settings)
 purge_manager = PurgeManager(storage, settings)
+device_monitor = DeviceMonitor(settings, entity_map)
 ha_client: HAClient | None = None
 _start_time: float = time.time()
+
+# Alert SSE clients — separate from event SSE
+alert_sse_clients: set[asyncio.Queue[str]] = set()
 
 # SSE clients — general events
 sse_clients: set[asyncio.Queue[str]] = set()
@@ -343,6 +349,23 @@ async def _event_processor() -> None:
                         _handle_ha_lifecycle_event(rec),
                         name=f"ha-lifecycle-{rec.event_type}",
                     )
+
+                # Device offline monitoring
+                if rec.event_type == "state_changed" and rec.entity_id:
+                    try:
+                        payload = json.loads(rec.payload) if isinstance(rec.payload, str) else rec.payload
+                        old_s = payload.get("old_state", {})
+                        new_s = payload.get("new_state", {})
+                        old_state = old_s.get("state") if isinstance(old_s, dict) else None
+                        new_state = new_s.get("state", "") if isinstance(new_s, dict) else ""
+                        alerts = device_monitor.process_state_change(
+                            rec.entity_id, old_state, new_state, payload,
+                        )
+                        for alert_data in alerts:
+                            await storage.insert_alert(**alert_data)
+                            _fan_out_alert_sse(alert_data)
+                    except Exception:
+                        logger.debug("device_monitor.process_error", entity_id=rec.entity_id)
 
                 # Reverse-link: if this is a state_changed for a KNX entity,
                 # find the nearest KNX telegram on any of its GAs and record
@@ -698,6 +721,37 @@ def _fan_out_sse(record: EventRecord) -> None:
         except asyncio.QueueFull:
             dead.add(client)
     sse_clients.difference_update(dead)
+
+
+def _fan_out_alert_sse(alert_data: dict[str, Any]) -> None:
+    """Push alert to all connected alert SSE clients."""
+    ts = alert_data.get("timestamp", 0)
+    iso = datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat() if ts else ""
+    details_raw = alert_data.get("details", "{}")
+    try:
+        details = json.loads(details_raw) if isinstance(details_raw, str) else details_raw
+    except (json.JSONDecodeError, TypeError):
+        details = {}
+    resp = AlertResponse(
+        id=alert_data.get("alert_id", ""),
+        alert_type=alert_data.get("alert_type", ""),
+        severity=alert_data.get("severity", "info"),
+        title=alert_data.get("title", ""),
+        message=alert_data.get("message", ""),
+        entity_id=alert_data.get("entity_id"),
+        integration=alert_data.get("integration"),
+        details=details,
+        acknowledged=False,
+        timestamp=iso,
+    )
+    sse_data = resp.model_dump_json()
+    dead: set[asyncio.Queue[str]] = set()
+    for client in alert_sse_clients:
+        try:
+            client.put_nowait(sse_data)
+        except asyncio.QueueFull:
+            dead.add(client)
+    alert_sse_clients.difference_update(dead)
 
 
 def _incident_to_response(row: dict[str, Any]) -> IncidentResponse:
@@ -1909,6 +1963,119 @@ async def api_metrics() -> Response:
         incidents_total=incidents_total,
     )
     return Response(content=text, media_type="text/plain")
+
+
+# ─── Alert / Notification API endpoints ────────────────
+
+
+@app.get("/api/alerts")
+async def api_alerts(
+    request: Request,
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=500),
+    alert_type: str | None = Query(None),
+    severity: str | None = Query(None),
+    acknowledged: bool | None = Query(None),
+) -> dict[str, Any]:
+    from_str = request.query_params.get("from")
+    to_str = request.query_params.get("to")
+    from_ts = _parse_timestamp(from_str)
+    to_ts = _parse_timestamp(to_str)
+    if from_ts is not None and to_ts is None:
+        to_ts = _epoch_ms()
+
+    offset = (page - 1) * limit
+    rows, total = await storage.get_alerts(
+        limit=limit,
+        offset=offset,
+        alert_type=alert_type,
+        severity=severity,
+        acknowledged=acknowledged,
+        from_ts=from_ts,
+        to_ts=to_ts,
+    )
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        details_raw = row.get("details") or "{}"
+        try:
+            details = json.loads(details_raw) if isinstance(details_raw, str) else details_raw
+        except (json.JSONDecodeError, TypeError):
+            details = {}
+        items.append(AlertResponse(
+            id=row["id"],
+            alert_type=row.get("alert_type", ""),
+            severity=row.get("severity", "info"),
+            title=row.get("title", ""),
+            message=row.get("message", ""),
+            entity_id=row.get("entity_id"),
+            integration=row.get("integration"),
+            details=details,
+            acknowledged=bool(row.get("acknowledged", 0)),
+            timestamp=_ms_to_iso(row.get("timestamp", 0)),
+        ).model_dump())
+
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "items": items,
+    }
+
+
+@app.get("/api/alerts/counts")
+async def api_alert_counts() -> dict[str, int]:
+    return await storage.get_alert_counts()
+
+
+@app.get("/api/alerts/stream")
+async def api_alert_stream(request: Request) -> StreamingResponse:
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=256)
+    alert_sse_clients.add(queue)
+
+    async def _gen() -> AsyncGenerator[str, None]:
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    data = await asyncio.wait_for(queue.get(), timeout=30)
+                    yield f"data: {data}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            alert_sse_clients.discard(queue)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream")
+
+
+@app.post("/api/alerts/{alert_id}/acknowledge")
+async def api_acknowledge_alert(alert_id: str) -> dict[str, bool]:
+    ok = await storage.acknowledge_alert(alert_id)
+    return {"ok": ok}
+
+
+@app.post("/api/alerts/acknowledge-all")
+async def api_acknowledge_all_alerts() -> dict[str, bool]:
+    count = await storage.acknowledge_all_alerts()
+    return {"ok": True, "count": count}
+
+
+@app.get("/api/devices/offline")
+async def api_offline_devices() -> dict[str, Any]:
+    devices = device_monitor.get_offline_devices()
+    return {"count": len(devices), "devices": devices}
+
+
+@app.get("/api/supervisor")
+async def api_supervisor_info() -> dict[str, Any]:
+    """Fetch supervisor-level info and logs for lifecycle/crash detection."""
+    if not ha_client:
+        return {"available": False, "error": "HA client not connected"}
+    result = await ha_client.fetch_supervisor_logs()
+    if not result:
+        return {"available": False, "error": "Supervisor API not reachable"}
+    return result
 
 
 # ─── KNX API endpoints ──────────────────────────────────

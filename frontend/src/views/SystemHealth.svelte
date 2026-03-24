@@ -1312,8 +1312,14 @@
     font-weight: 600; color: var(--color-text-muted);
   }
 
-  @media (max-width: 640px) {
+  @media (max-width: 768px) {
     .health-view { padding: var(--sp-4) var(--sp-3); gap: var(--sp-3); }
+    .kpi-grid { grid-template-columns: repeat(3, 1fr); }
+    .top-integrations { grid-template-columns: repeat(2, 1fr); }
+    .integration-name { width: 110px; }
+    .section-summary { font-size: var(--text-2xs); }
+  }
+  @media (max-width: 640px) {
     .kpi-grid { grid-template-columns: repeat(2, 1fr); }
     .top-integrations { grid-template-columns: repeat(2, 1fr); }
     .integration-name { width: 100px; }

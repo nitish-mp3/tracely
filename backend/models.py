@@ -183,3 +183,19 @@ class KnxFlowResponse(BaseModel):
     window_ms: int
     knx_telegrams: list[KnxTelegramResponse]
     ha_events: list[EventResponse]
+
+
+# ─── Alert models ──────────────────────────────────────
+
+
+class AlertResponse(BaseModel):
+    id: str
+    alert_type: str
+    severity: str
+    title: str
+    message: str
+    entity_id: str | None = None
+    integration: str | None = None
+    details: dict
+    acknowledged: bool = False
+    timestamp: str  # ISO 8601

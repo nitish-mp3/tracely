@@ -1152,21 +1152,14 @@
   }
 
   /* ── Mobile responsive ──────────────────────── */
-  @media (max-width: 640px) {
-    .filter-row {
-      flex-wrap: wrap;
-      gap: 8px;
-    }
-    .filter-group {
-      flex: 1 1 140px;
-    }
-    .summary-chips {
-      overflow-x: auto;
-      flex-wrap: nowrap;
-      padding-bottom: 2px;
-    }
-    .chip { flex-shrink: 0; }
+  @media (max-width: 768px) {
     .panel-header { flex-wrap: wrap; gap: 10px; }
+    .filter-row { flex-wrap: wrap; gap: 8px; }
+    .filter-group { flex: 1 1 140px; }
+    .summary-chips { overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; }
+    .chip { flex-shrink: 0; }
+  }
+  @media (max-width: 640px) {
     .protocol-selector { width: 100%; justify-content: stretch; }
     .protocol-btn { flex: 1; text-align: center; }
     .zb-modal {
@@ -1186,5 +1179,10 @@
     .zb-modal-footer { flex-direction: column; align-items: stretch; }
     .zb-trace-btn { justify-content: center; }
     .zb-nav { justify-content: center; }
+  }
+  @media (max-width: 480px) {
+    .filter-group { flex: 1 1 100%; }
+    .chip { font-size: 10px; padding: 2px 8px; }
+    .zb-attrs-grid { grid-template-columns: 1fr; }
   }
 </style>
